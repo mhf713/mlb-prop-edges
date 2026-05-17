@@ -307,9 +307,14 @@ def send_email(api_key, to_email, subject, html_body, text_body):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode("utf-8"))
-
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"Resend API error HTTP {e.code}: {body}", file=sys.stderr)
+        raise
+      
 def fmt_woba(w):
     if w is None: return "—"
     s = f"{w:.3f}"

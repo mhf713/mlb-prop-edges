@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 """
 MLB Prop Edge — Daily Email Sender
-Fetches today's slate, runs the matchup model on each team's full active roster
-vs today's probable opposing pitcher, and emails the top 10 edges via Resend.
-
-Reads two env vars:
-  RESEND_API_KEY   — your Resend API key (set as GitHub repo secret)
-  RECIPIENT_EMAIL  — email address to send to (e.g. mhf713@gmail.com)
-
-Standard library only — no `pip install` required.
 """
 
 import csv
@@ -18,6 +10,7 @@ import json
 import os
 import sys
 import urllib.request
+import urllib.error
 
 W = {"uBB": 0.689, "HBP": 0.720, "1B": 0.882, "2B": 1.255, "3B": 1.583, "HR": 2.045}
 
@@ -66,51 +59,34 @@ def num(x):
     except: return None
 
 def get_schedule(date):
-    return json.loads(fetch(
-        f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&hydrate=probablePitcher,lineups,team&date={date}"
-    ))
+    return json.loads(fetch(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&hydrate=probablePitcher,lineups,team&date={date}"))
 
 def get_savant(season, kind):
-    url = (f"https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats"
-           f"?type={kind}&min=10&season={season}&csv=true")
+    url = f"https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type={kind}&min=10&season={season}&csv=true"
     return list(csv.DictReader(fetch(url).splitlines()))
 
 def get_splits(sit, season):
-    return json.loads(fetch(
-        f"https://statsapi.mlb.com/api/v1/stats?stats=statSplits&group=hitting"
-        f"&sitCodes={sit}&season={season}&sportId=1&gameType=R&limit=2000"
-    ))
+    return json.loads(fetch(f"https://statsapi.mlb.com/api/v1/stats?stats=statSplits&group=hitting&sitCodes={sit}&season={season}&sportId=1&gameType=R&limit=2000"))
 
 def get_roster(team_id):
     try:
-        r = json.loads(fetch(
-            f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?rosterType=active"
-        ))
-        return [{"id": str(p["person"]["id"]), "name": p["person"]["fullName"],
-                 "pos": (p.get("position") or {}).get("abbreviation", "")}
-                for p in r.get("roster", [])
-                if (p.get("position") or {}).get("type") != "Pitcher"]
+        r = json.loads(fetch(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?rosterType=active"))
+        return [{"id": str(p["person"]["id"]), "name": p["person"]["fullName"], "pos": (p.get("position") or {}).get("abbreviation", "")}
+                for p in r.get("roster", []) if (p.get("position") or {}).get("type") != "Pitcher"]
     except Exception:
         return []
 
 def get_people_handedness(ids):
     if not ids: return {}
     try:
-        ppl = json.loads(fetch(
-            f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(sorted(ids))}"
-        ))
-        return {str(p["id"]): (p.get("pitchHand") or {}).get("code")
-                for p in ppl.get("people", [])}
+        ppl = json.loads(fetch(f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(sorted(ids))}"))
+        return {str(p["id"]): (p.get("pitchHand") or {}).get("code") for p in ppl.get("people", [])}
     except Exception:
         return {}
 
 def get_weather(lat, lon):
     try:
-        return json.loads(fetch(
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            f"&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,precipitation_probability"
-            f"&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=2&timezone=auto"
-        ))
+        return json.loads(fetch(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,precipitation_probability&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=2&timezone=auto"))
     except Exception:
         return None
 
@@ -120,10 +96,7 @@ def index_batters(rows):
         pid = r.get("player_id")
         if not pid: continue
         out.setdefault(pid, {"n": r["last_name, first_name"], "t": r["team_name_alt"], "bp": {}})
-        out[pid]["bp"][r["pitch_type"]] = {
-            "pa": int(num(r.get("pa")) or 0),
-            "xw": num(r.get("est_woba")) if r.get("est_woba") else None,
-        }
+        out[pid]["bp"][r["pitch_type"]] = {"pa": int(num(r.get("pa")) or 0), "xw": num(r.get("est_woba")) if r.get("est_woba") else None}
     return out
 
 def index_pitchers(rows):
@@ -152,8 +125,7 @@ def league_pitch_mix(rows):
 def league_xwoba_by_pitch(rows):
     n, d = {}, {}
     for r in rows:
-        v = num(r.get("est_woba"))
-        pa = num(r.get("pa")) or 0
+        v = num(r.get("est_woba")); pa = num(r.get("pa")) or 0
         if v is None: continue
         c = r["pitch_type"]
         n[c] = n.get(c, 0) + v * pa
@@ -193,8 +165,7 @@ def index_handedness(vl, vr):
     for pid in hand:
         c = hand[pid]["_c"]
         if c["den"] > 0:
-            hand[pid]["overall"] = (W["uBB"]*c["uBB"] + W["HBP"]*c["HBP"] + W["1B"]*c["1B"]
-                                    + W["2B"]*c["2B"] + W["3B"]*c["3B"] + W["HR"]*c["HR"]) / c["den"]
+            hand[pid]["overall"] = (W["uBB"]*c["uBB"] + W["HBP"]*c["HBP"] + W["1B"]*c["1B"] + W["2B"]*c["2B"] + W["3B"]*c["3B"] + W["HR"]*c["HR"]) / c["den"]
         else:
             hand[pid]["overall"] = None
     return hand
@@ -230,8 +201,7 @@ def matchup(batters, pitchers, league_mix, league_xwoba, hand, pitcher_hand_map,
     ph = pitcher_hand_map.get(pid)
     hf = handedness_factor(hand, bid, ph)
     adj = mn * hf
-    return {"matchup": mn, "adjusted": adj, "baseline": base,
-            "edge": adj - base, "impact": impact, "ph": ph, "hf": hf}
+    return {"matchup": mn, "adjusted": adj, "baseline": base, "edge": adj - base, "impact": impact, "ph": ph, "hf": hf}
 
 def angle_diff(a, b):
     d = a - b
@@ -260,13 +230,11 @@ def game_weather(game, stadium_tuple):
         for i, t in enumerate(hours):
             diff = abs((dt.datetime.fromisoformat(t) - target).total_seconds())
             if diff < best: best = diff; idx = i
-        return {
-            "temp": data["hourly"]["temperature_2m"][idx],
-            "wind": data["hourly"]["wind_speed_10m"][idx],
-            "wd":   data["hourly"]["wind_direction_10m"][idx],
-            "precip": data["hourly"]["precipitation_probability"][idx],
-            "windKind": wind_relative(data["hourly"]["wind_direction_10m"][idx], cfaz),
-        }
+        return {"temp": data["hourly"]["temperature_2m"][idx],
+                "wind": data["hourly"]["wind_speed_10m"][idx],
+                "wd":   data["hourly"]["wind_direction_10m"][idx],
+                "precip": data["hourly"]["precipitation_probability"][idx],
+                "windKind": wind_relative(data["hourly"]["wind_direction_10m"][idx], cfaz)}
     except Exception as e:
         return {"error": str(e)}
 
@@ -287,26 +255,17 @@ def weather_points(wx):
 def coverage_penalty(c):
     return 0 if c >= 0.7 else (0.7 - c) * 25
 
-def edge_score(r, wx):
-    return 1000 * (r["adjusted"] - r["baseline"]) + weather_points(wx) - coverage_penalty(r["impact"])
-
 def send_email(api_key, to_email, subject, html_body, text_body):
+    print(f"DEBUG: sending to '{to_email}' (len={len(to_email)}) with key prefix '{api_key[:7]}...' (len={len(api_key)})", file=sys.stderr)
     payload = json.dumps({
-        "from":    "onboarding@resend.dev",
-        "to":      [to_email],
+        "from": "onboarding@resend.dev",
+        "to": [to_email],
         "subject": subject,
-        "html":    html_body,
-        "text":    text_body,
+        "html": html_body,
+        "text": text_body,
     }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-        },
-        method="POST",
-    )
+    req = urllib.request.Request("https://api.resend.com/emails", data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -314,7 +273,7 @@ def send_email(api_key, to_email, subject, html_body, text_body):
         body = e.read().decode("utf-8", errors="replace")
         print(f"Resend API error HTTP {e.code}: {body}", file=sys.stderr)
         raise
-      
+
 def fmt_woba(w):
     if w is None: return "—"
     s = f"{w:.3f}"
@@ -322,8 +281,7 @@ def fmt_woba(w):
 
 def fmt_edge(e):
     if e is None: return "—"
-    pts = round(e * 1000)
-    return f"{pts:+d}"
+    return f"{round(e * 1000):+d}"
 
 def fmt_score(s):
     return f"{s:+.1f}"
@@ -332,58 +290,15 @@ def build_email_html(date, rows, stats):
     today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
     rows_html = []
     for i, r in enumerate(rows, 1):
-        status = ("&#9989; in" if r["in_lineup"] is True
-                  else "bench" if r["in_lineup"] is False
-                  else "&#9711; TBD")
+        status = ("&#9989; in" if r["in_lineup"] is True else "bench" if r["in_lineup"] is False else "&#9711; TBD")
         score_color = "#166534" if r["score"] > 2 else "#991b1b" if r["score"] < -2 else "#6b7280"
         hand_str = f" ({r['ph']}HP)" if r["ph"] else ""
-        rows_html.append(f"""
-<tr style="border-bottom:1px solid #f3f4f6">
-  <td style="padding:8px 10px;font-weight:700;color:{score_color};font-variant-numeric:tabular-nums">{fmt_score(r['score'])}</td>
-  <td style="padding:8px 10px;color:#374151;font-size:11px">{status}</td>
-  <td style="padding:8px 10px"><strong>{r['name']}</strong> <span style="color:#9ca3af;font-size:11px">{r['team']}</span></td>
-  <td style="padding:8px 10px;color:#374151">vs {r['opp']}{hand_str} <span style="color:#9ca3af">({r['game']})</span></td>
-  <td style="padding:8px 10px;font-variant-numeric:tabular-nums">{fmt_woba(r['expWoba'])}</td>
-  <td style="padding:8px 10px;font-variant-numeric:tabular-nums">{r['hf']:.2f}</td>
-  <td style="padding:8px 10px;font-variant-numeric:tabular-nums">{fmt_edge(r['edge'])}</td>
-  <td style="padding:8px 10px;font-variant-numeric:tabular-nums">{r['wx']:+.1f}</td>
-  <td style="padding:8px 10px;font-variant-numeric:tabular-nums">{round(r['cov']*100)}%</td>
-</tr>""")
-    rows_combined = "".join(rows_html)
-    return f"""<!DOCTYPE html>
-<html><body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;background:#fafafa;color:#1f2937;margin:0;padding:20px">
-  <div style="max-width:760px;margin:0 auto">
-    <h1 style="font-size:20px;margin:0 0 4px">MLB Prop Edge — Top 10</h1>
-    <div style="color:#6b7280;font-size:13px;margin-bottom:16px">{today_str} &middot; {stats['games']} games &middot; {stats['candidates']} candidates scored across {stats['rostered']} active-roster hitters</div>
-    <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;overflow:hidden">
-      <thead style="background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;text-align:left">
-        <tr>
-          <th style="padding:8px 10px">Score</th>
-          <th style="padding:8px 10px">Status</th>
-          <th style="padding:8px 10px">Batter</th>
-          <th style="padding:8px 10px">Matchup</th>
-          <th style="padding:8px 10px">Exp xwOBA</th>
-          <th style="padding:8px 10px">Hand×</th>
-          <th style="padding:8px 10px">&#916; base</th>
-          <th style="padding:8px 10px">Wx</th>
-          <th style="padding:8px 10px">Cov</th>
-        </tr>
-      </thead>
-      <tbody>{rows_combined}</tbody>
-    </table>
-    <div style="margin-top:18px;font-size:12px;color:#4b5563;line-height:1.5">
-      <strong>How the score works.</strong> Edge Score = 1000 &times; (Adjusted Expected xwOBA &minus; Baseline) + Weather points &minus; Coverage penalty. The model weights the pitcher&rsquo;s pitch mix by the batter&rsquo;s per-pitch xwOBA, applies a regressed handedness multiplier (batter&rsquo;s wOBA vs pitcher hand &divide; overall wOBA), then adjusts for weather. Status: <span style="color:#166534">&#9989; in</span> = confirmed in posted lineup, <em>bench</em> = active roster, not in posted lineup, <span style="color:#92400e">&#9711; TBD</span> = lineup not yet released.
-    </div>
-    <div style="margin-top:10px;font-size:11px;color:#9ca3af">
-      Sources: MLB Stats API, Baseball Savant, Open-Meteo.
-    </div>
-  </div>
-</body></html>"""
+        rows_html.append(f"<tr style=\"border-bottom:1px solid #f3f4f6\"><td style=\"padding:8px 10px;font-weight:700;color:{score_color}\">{fmt_score(r['score'])}</td><td style=\"padding:8px 10px;font-size:11px\">{status}</td><td style=\"padding:8px 10px\"><strong>{r['name']}</strong> <span style=\"color:#9ca3af;font-size:11px\">{r['team']}</span></td><td style=\"padding:8px 10px\">vs {r['opp']}{hand_str} <span style=\"color:#9ca3af\">({r['game']})</span></td><td style=\"padding:8px 10px\">{fmt_woba(r['expWoba'])}</td><td style=\"padding:8px 10px\">{r['hf']:.2f}</td><td style=\"padding:8px 10px\">{fmt_edge(r['edge'])}</td><td style=\"padding:8px 10px\">{r['wx']:+.1f}</td><td style=\"padding:8px 10px\">{round(r['cov']*100)}%</td></tr>")
+    return f"<!DOCTYPE html><html><body style=\"font-family:-apple-system,Helvetica,Arial,sans-serif;background:#fafafa;color:#1f2937;margin:0;padding:20px\"><div style=\"max-width:760px;margin:0 auto\"><h1 style=\"font-size:20px;margin:0 0 4px\">MLB Prop Edge — Top 10</h1><div style=\"color:#6b7280;font-size:13px;margin-bottom:16px\">{today_str} &middot; {stats['games']} games &middot; {stats['candidates']} candidates</div><table style=\"width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px\"><thead style=\"background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left\"><tr><th style=\"padding:8px 10px\">Score</th><th style=\"padding:8px 10px\">Status</th><th style=\"padding:8px 10px\">Batter</th><th style=\"padding:8px 10px\">Matchup</th><th style=\"padding:8px 10px\">Exp xwOBA</th><th style=\"padding:8px 10px\">Hand×</th><th style=\"padding:8px 10px\">&#916; base</th><th style=\"padding:8px 10px\">Wx</th><th style=\"padding:8px 10px\">Cov</th></tr></thead><tbody>{''.join(rows_html)}</tbody></table></div></body></html>"
 
 def build_email_text(date, rows, stats):
     today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
-    lines = [f"MLB Prop Edge — Top 10 for {today_str}",
-             f"{stats['games']} games · {stats['candidates']} candidates scored", ""]
+    lines = [f"MLB Prop Edge — Top 10 for {today_str}", f"{stats['games']} games · {stats['candidates']} candidates", ""]
     for i, r in enumerate(rows, 1):
         status = "in" if r["in_lineup"] is True else "bench" if r["in_lineup"] is False else "TBD"
         ph = f" ({r['ph']}HP)" if r["ph"] else ""
@@ -400,42 +315,32 @@ def main():
         print("ERROR: RESEND_API_KEY env var not set", file=sys.stderr); sys.exit(2)
     if not recipient:
         print("ERROR: RECIPIENT_EMAIL env var not set", file=sys.stderr); sys.exit(2)
-
     et_today = (dt.datetime.utcnow() - dt.timedelta(hours=4)).date()
     DATE = et_today.isoformat()
     SEASON = et_today.year
-
     print(f"Running for date={DATE} (ET) season={SEASON}", flush=True)
-
     sched = get_schedule(DATE)
     games = (sched.get("dates", [{}])[0] or {}).get("games", [])
     if not games:
-        print(f"No MLB games on {DATE}.")
-        body_html = f"<p>No MLB games scheduled for {DATE}.</p>"
-        body_text = f"No MLB games scheduled for {DATE}."
-        send_email(api_key, recipient, f"MLB Prop Edge — No games {DATE}", body_html, body_text)
+        send_email(api_key, recipient, f"MLB Prop Edge — No games {DATE}", f"<p>No MLB games scheduled for {DATE}.</p>", f"No MLB games scheduled for {DATE}.")
         return
-
     print(f"  schedule: {len(games)} games", flush=True)
     bat_rows = get_savant(SEASON, "batter")
     pit_rows = get_savant(SEASON, "pitcher")
     vl = get_splits("vl", SEASON)
     vr = get_splits("vr", SEASON)
     print(f"  batter rows: {len(bat_rows)}, pitcher rows: {len(pit_rows)}", flush=True)
-
     batters = index_batters(bat_rows)
     pitchers = index_pitchers(pit_rows)
     lg_mix = league_pitch_mix(pit_rows)
     lg_xw  = league_xwoba_by_pitch(bat_rows)
     hand   = index_handedness(vl, vr)
-
     pitcher_ids = set()
     for g in games:
         for s in ("away", "home"):
             pp = g["teams"][s].get("probablePitcher") or {}
             if pp.get("id"): pitcher_ids.add(str(pp["id"]))
     pitcher_hand_map = get_people_handedness(pitcher_ids)
-
     team_ids = set()
     for g in games:
         team_ids.add(g["teams"]["away"]["team"]["id"])
@@ -443,12 +348,10 @@ def main():
     rosters = {tid: get_roster(tid) for tid in team_ids}
     rostered = sum(len(v) for v in rosters.values())
     print(f"  rosters: {rostered} position players across {len(rosters)} teams", flush=True)
-
     weather = {}
     for g in games:
         h_abbr = TEAM_ABBR.get(g["teams"]["home"]["team"].get("name", ""), "")
         weather[g["gamePk"]] = game_weather(g, STADIUMS.get(h_abbr))
-
     rows = []
     for g in games:
         a = g["teams"]["away"]; h = g["teams"]["home"]
@@ -462,7 +365,6 @@ def main():
         h_lineup_ids = {str(p["id"]) for p in (ln.get("homePlayers") or [])}
         wx = weather.get(g["gamePk"])
         wxp = weather_points(wx)
-
         def score_side(roster, opp_pp, my_abbr, opp_abbr, lineup_ids, game_label, game_time):
             if not opp_pp.get("id"): return
             pid = str(opp_pp["id"])
@@ -473,29 +375,18 @@ def main():
                 if not r: continue
                 s = 1000*(r["adjusted"] - r["baseline"]) + wxp - coverage_penalty(r["impact"])
                 in_lineup = None if not lineup_ids else (bid in lineup_ids)
-                rows.append({
-                    "name": pl["name"], "team": my_abbr,
-                    "opp": opp_pp.get("fullName", "?"),
-                    "ph":  r["ph"],
-                    "expWoba": r["adjusted"], "hf": r["hf"], "edge": r["edge"],
+                rows.append({"name": pl["name"], "team": my_abbr, "opp": opp_pp.get("fullName", "?"),
+                    "ph": r["ph"], "expWoba": r["adjusted"], "hf": r["hf"], "edge": r["edge"],
                     "cov": r["impact"], "wx": wxp, "score": s,
-                    "game": game_label, "game_time": game_time,
-                    "in_lineup": in_lineup,
-                })
-
-        score_side(rosters.get(a_tid, []), h_pp, a_abbr, h_abbr, a_lineup_ids,
-                   f"{a_abbr} @ {h_abbr}", g["gameDate"])
-        score_side(rosters.get(h_tid, []), a_pp, h_abbr, a_abbr, h_lineup_ids,
-                   f"{a_abbr} @ {h_abbr}", g["gameDate"])
-
+                    "game": game_label, "game_time": game_time, "in_lineup": in_lineup})
+        score_side(rosters.get(a_tid, []), h_pp, a_abbr, h_abbr, a_lineup_ids, f"{a_abbr} @ {h_abbr}", g["gameDate"])
+        score_side(rosters.get(h_tid, []), a_pp, h_abbr, a_abbr, h_lineup_ids, f"{a_abbr} @ {h_abbr}", g["gameDate"])
     rows.sort(key=lambda x: -x["score"])
     top = rows[:10]
-
     stats = {"games": len(games), "candidates": len(rows), "rostered": rostered}
     html = build_email_html(DATE, top, stats)
     text = build_email_text(DATE, top, stats)
     subject = f"MLB Prop Edge — Top 10 for {DATE}"
-
     print(f"  candidates scored: {len(rows)}; sending top 10...", flush=True)
     resp = send_email(api_key, recipient, subject, html, text)
     print(f"  sent: {resp}", flush=True)

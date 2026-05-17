@@ -265,7 +265,7 @@ def send_email(api_key, to_email, subject, html_body, text_body):
         "text": text_body,
     }).encode("utf-8")
     req = urllib.request.Request("https://api.resend.com/emails", data=payload,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method="POST")
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (compatible; MLB-PropEdge/1.0)", "Accept": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8"))

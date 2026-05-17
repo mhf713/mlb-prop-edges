@@ -1,0 +1,28 @@
+name: MLB Prop Edge — Daily Email
+
+on:
+  schedule:
+    # 12:00 UTC = 8:00 AM Eastern Daylight Time (EDT, summer)
+    #            = 7:00 AM Eastern Standard Time (EST, winter)
+    # MLB regular season runs ~April–Oct (EDT), so this gives you 8 AM ET on game days.
+    - cron: "0 12 * * *"
+  workflow_dispatch:  # lets you trigger a run manually from the Actions tab
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run daily email script
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: python daily_email.py

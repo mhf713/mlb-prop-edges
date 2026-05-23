@@ -5,7 +5,7 @@ on:
     # 12:00 UTC = 8:00 AM Eastern Daylight Time (EDT, summer)
     #            = 7:00 AM Eastern Standard Time (EST, winter)
     # MLB regular season runs ~April–Oct (EDT), so this gives you 8 AM ET on game days.
-    - cron: "0 12 * * *"
+    - cron: "0 6 * * *"
   workflow_dispatch:  # lets you trigger a run manually from the Actions tab
 
 permissions:

@@ -30,18 +30,21 @@ jobs:
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: python daily_email.py
 
-      - name: Commit dashboard to docs/
+      - name: Commit dashboard, picks, and results
         run: |
-          if [ -f docs/index.html ]; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add docs/index.html
-            if git diff --cached --quiet; then
-              echo "No dashboard changes to commit."
-            else
-              git commit -m "Update dashboard $(date -u +%Y-%m-%d)" -m "[skip ci]"
-              git push
-            fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage whichever of these exist this run
+          if [ -f docs/index.html ]; then git add docs/index.html; fi
+          if [ -d picks ];   then git add picks;   fi
+          if [ -d results ]; then git add results; fi
+
+          if git diff --cached --quiet; then
+            echo "Nothing new to commit."
           else
-            echo "docs/index.html not produced (no games or script error) — skipping commit."
+            git commit \
+              -m "Update dashboard / picks / results $(date -u +%Y-%m-%d)" \
+              -m "[skip ci]"
+            git push
           fi

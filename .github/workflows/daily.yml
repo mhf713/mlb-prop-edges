@@ -8,6 +8,9 @@ on:
     - cron: "0 12 * * *"
   workflow_dispatch:  # lets you trigger a run manually from the Actions tab
 
+permissions:
+  contents: write  # needed so the workflow can commit docs/index.html back to main
+
 jobs:
   send-email:
     runs-on: ubuntu-latest
@@ -26,3 +29,19 @@ jobs:
           RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: python daily_email.py
+
+      - name: Commit dashboard to docs/
+        run: |
+          if [ -f docs/index.html ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add docs/index.html
+            if git diff --cached --quiet; then
+              echo "No dashboard changes to commit."
+            else
+              git commit -m "Update dashboard $(date -u +%Y-%m-%d)" -m "[skip ci]"
+              git push
+            fi
+          else
+            echo "docs/index.html not produced (no games or script error) — skipping commit."
+          fi

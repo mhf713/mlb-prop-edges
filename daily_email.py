@@ -619,7 +619,7 @@ def send_email(api_key, to_email, subject, html_body, text_body):
 def fmt_pct(p): return f"{p*100:.1f}%"
 def fmt_edge_pct(e): return f"{e*100:+.1f}%"
 
-def build_email_html(date, rows, stats):
+def build_email_html(date, rows, stats, track_record_html=""):
     today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
     rows_html = []
     for i, r in enumerate(rows, 1):
@@ -666,6 +666,7 @@ def build_email_html(date, rows, stats):
         f"<div style='max-width:1080px;margin:0 auto'>"
         f"<h1 style='font-size:20px;margin:0 0 4px'>MLB Prop Edge — Top 10 H+R+RBI</h1>"
         f"<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>{today_str} &middot; {stats['games']} games &middot; ranked by best edge vs -110 break-even (52.4%)</div>"
+        f"{track_record_html}"
         f"<table style='width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px'>"
         f"<thead style='background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left'>"
         f"<tr>"
@@ -710,10 +711,13 @@ def build_email_html(date, rows, stats):
         f"</div></body></html>"
     )
 
-def build_email_text(date, rows, stats):
+def build_email_text(date, rows, stats, track_record_line=""):
     today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
     lines = [f"MLB Prop Edge — Top 10 H+R+RBI for {today_str}",
              f"{stats['games']} games, ranked by best edge vs -110 break-even.", ""]
+    if track_record_line:
+        lines.append(track_record_line)
+        lines.append("")
     for i, r in enumerate(rows, 1):
         status = "in" if r["in_lineup"] is True else "bench" if r["in_lineup"] is False else "TBD"
         ph = f" ({r['ph']}HP)" if r["ph"] else ""
@@ -739,7 +743,7 @@ def build_email_text(date, rows, stats):
     lines.append("Park 0.92–1.20 · Weather 0.92–1.08 · Bullpen 0.95–1.05 net · BvP 0.85–1.20 (regressed)")
     return "\n".join(lines)
 
-def build_dashboard_html(date, rows, stats):
+def build_dashboard_html(date, rows, stats, track_record_html=""):
     """Standalone dashboard HTML — same data as the email, just more rows and a timestamp.
 
     Designed to be committed to docs/index.html and served via GitHub Pages.
@@ -767,8 +771,9 @@ def build_dashboard_html(date, rows, stats):
             bvp_color = "#166534" if r.get("bvp_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvp_mult", 1.0) < 0.98 else "#6b7280"
             bvp_str = f"{r['bvp_mult']:.2f} ({r['bvp_pa']}PA)"
         wx_str = r.get("weather_label") or "&mdash;"
+        bid_attr = f" data-bid='{r.get('_bid','')}'" if r.get("_bid") else ""
         rows_html.append(
-            f"<tr style='border-bottom:1px solid #f3f4f6'>"
+            f"<tr style='border-bottom:1px solid #f3f4f6'{bid_attr}>"
             f"<td style='padding:8px 10px;color:#9ca3af;font-size:11px'>{i}</td>"
             f"<td style='padding:8px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(r['best_edge'])}</td>"
             f"<td style='padding:8px 10px;font-size:11px'>{status}</td>"
@@ -796,7 +801,8 @@ def build_dashboard_html(date, rows, stats):
         f"<div style='max-width:1200px;margin:0 auto'>"
         f"<h1 style='font-size:22px;margin:0 0 4px'>MLB Prop Edge &mdash; Top {len(rows)} H+R+RBI</h1>"
         f"<div style='color:#6b7280;font-size:13px;margin-bottom:6px'>{today_str} &middot; {stats['games']} games &middot; {stats['qualified']} qualified batters &middot; ranked by best edge vs &minus;110 break-even (52.4%)</div>"
-        f"<div style='color:#9ca3af;font-size:11px;margin-bottom:16px'>Generated {gen_at_utc} &middot; same model as the daily email</div>"
+        f"<div style='color:#9ca3af;font-size:11px;margin-bottom:6px'>Generated {gen_at_utc} &middot; same model as the daily email</div>"
+        f"{track_record_html}"
         f"<div style='overflow-x:auto'>"
         f"<table style='width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px'>"
         f"<thead style='background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left'>"
@@ -844,6 +850,263 @@ def build_dashboard_html(date, rows, stats):
         f"</div></body></html>"
     )
 
+# =============== GRADING / TRACK RECORD ===============
+
+def _normalize_name(s):
+    import unicodedata
+    s = unicodedata.normalize("NFD", s or "")
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return " ".join(s.lower().split())
+
+def get_boxscore(game_pk):
+    try:
+        return json.loads(fetch(f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore", timeout=20))
+    except Exception:
+        return None
+
+def build_results_index(date_iso):
+    """Pull schedule + boxscores for date_iso; index actual H/R/RBI by team & player.
+
+    Returns {team_abbr: {key: rec}} where key is BOTH the player's MLB id (string)
+    AND the normalized fullName, so lookups by either work. Only games that have
+    reached abstractGameState=='Final' contribute (so grading skips silently while
+    a slate is still in progress).
+    """
+    out = {}
+    try:
+        sched = json.loads(fetch(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_iso}"))
+    except Exception:
+        return out
+    games = (sched.get("dates", [{}])[0] or {}).get("games", [])
+    for g in games:
+        if ((g.get("status") or {}).get("abstractGameState")) != "Final":
+            continue
+        box = get_boxscore(g.get("gamePk"))
+        if not box:
+            continue
+        for side in ("away", "home"):
+            tm = box.get("teams", {}).get(side, {})
+            tname = (tm.get("team") or {}).get("name", "")
+            abbr = TEAM_ABBR.get(tname, tname[:3].upper())
+            tbucket = out.setdefault(abbr, {})
+            for _, pdata in (tm.get("players") or {}).items():
+                person = pdata.get("person", {}) or {}
+                pid = str(person.get("id", "") or "")
+                name = person.get("fullName", "") or ""
+                bat = (pdata.get("stats") or {}).get("batting") or {}
+                pa = int(bat.get("plateAppearances", 0) or 0)
+                rec = {
+                    "batter_id": pid, "name": name,
+                    "hits":  int(bat.get("hits", 0) or 0),
+                    "runs":  int(bat.get("runs", 0) or 0),
+                    "rbi":   int(bat.get("rbi", 0) or 0),
+                    "ab":    int(bat.get("atBats", 0) or 0),
+                    "pa":    pa,
+                    "played": pa > 0,
+                }
+                if pid:
+                    tbucket[pid] = rec
+                tbucket[_normalize_name(name)] = rec
+    return out
+
+def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
+    """If picks/{date}.json exists and results/{date}.json does not, fetch actual box
+    scores for that day and write graded results. Returns the summary dict or None."""
+    picks_file = os.path.join(picks_dir, f"{date_iso}.json")
+    results_file = os.path.join(results_dir, f"{date_iso}.json")
+    if not os.path.exists(picks_file):
+        return None
+    if os.path.exists(results_file):
+        return None
+    try:
+        with open(picks_file) as f:
+            picks_data = json.load(f)
+    except Exception as e:
+        print(f"  WARN: could not read {picks_file}: {e}", file=sys.stderr)
+        return None
+    idx = build_results_index(date_iso)
+    if not idx:
+        print(f"  no Final games yet for {date_iso} — skipping grade", flush=True)
+        return None
+
+    results = []
+    sums = {"graded": 0, "matched": 0, "played": 0, "over_15": 0, "over_25": 0,
+            "wins_at_line": 0, "ev_o15_sum": 0.0, "ev_o25_sum": 0.0, "ev_line_sum": 0.0}
+    for p in picks_data.get("picks", []):
+        team = p.get("team", "")
+        nm = p.get("name", "")
+        bid = str(p.get("batter_id") or "")
+        rec = None
+        if team in idx:
+            tidx = idx[team]
+            if bid and bid in tidx:
+                rec = tidx[bid]
+            if rec is None:
+                rec = tidx.get(_normalize_name(nm))
+        sums["graded"] += 1
+        if rec is None:
+            results.append({**p, "matched": False, "played": False, "hrr": None})
+            continue
+        h, r_, rbi = rec["hits"], rec["runs"], rec["rbi"]
+        hrr = h + r_ + rbi
+        played = bool(rec["played"])
+        line = str(p.get("line") or "1.5")
+        over_15 = played and hrr >= 2
+        over_25 = played and hrr >= 3
+        win_at_line = over_15 if line == "1.5" else over_25
+        results.append({**p, "matched": True, "played": played,
+                        "hits": h, "runs": r_, "rbi": rbi, "hrr": hrr,
+                        "over_15": over_15, "over_25": over_25,
+                        "win_at_line": win_at_line})
+        sums["matched"] += 1
+        if played:
+            sums["played"] += 1
+            if over_15: sums["over_15"] += 1
+            if over_25: sums["over_25"] += 1
+            if win_at_line: sums["wins_at_line"] += 1
+            sums["ev_o15_sum"]  += float(p.get("p_over_15") or 0.0)
+            sums["ev_o25_sum"]  += float(p.get("p_over_25") or 0.0)
+            sums["ev_line_sum"] += float((p.get("p_over_15") if line == "1.5" else p.get("p_over_25")) or 0.0)
+    pl = max(1, sums["played"])
+    summary = {
+        **sums,
+        "over_15_rate": sums["over_15"]/pl if sums["played"] else 0.0,
+        "over_25_rate": sums["over_25"]/pl if sums["played"] else 0.0,
+        "wins_at_line_rate": sums["wins_at_line"]/pl if sums["played"] else 0.0,
+        "expected_over_15_rate": sums["ev_o15_sum"]/pl if sums["played"] else 0.0,
+        "expected_over_25_rate": sums["ev_o25_sum"]/pl if sums["played"] else 0.0,
+        "expected_wins_at_line_rate": sums["ev_line_sum"]/pl if sums["played"] else 0.0,
+        "roi_at_line_pct": (sums["wins_at_line"]/pl * 1.909 - 1.0) if sums["played"] else 0.0,
+    }
+    os.makedirs(results_dir, exist_ok=True)
+    with open(results_file, "w") as f:
+        json.dump({"date": date_iso,
+                   "graded_at_utc": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                   "results": results, "summary": summary}, f, indent=2)
+    print(f"  graded {date_iso}: {sums['wins_at_line']}/{sums['played']} wins at picked line "
+          f"(expected {summary['expected_wins_at_line_rate']*100:.1f}%, ROI {summary['roi_at_line_pct']*100:+.1f}%)", flush=True)
+    return summary
+
+def save_picks(date_iso, top_picks, picks_dir="picks"):
+    """Write a JSON snapshot of today's top picks so we can grade them tomorrow."""
+    os.makedirs(picks_dir, exist_ok=True)
+    fname = os.path.join(picks_dir, f"{date_iso}.json")
+    out = {
+        "date": date_iso,
+        "generated_at_utc": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "picks": [
+            {"rank": i+1, "batter_id": str(r.get("_bid") or ""),
+             "name": r.get("name", ""), "team": r.get("team", ""),
+             "opp_pitcher": r.get("opp", ""), "game": r.get("game", ""),
+             "in_lineup": r.get("in_lineup"), "lineup_pos": r.get("lineup_pos"),
+             "line": r.get("best_line", "1.5"),
+             "best_edge": r.get("best_edge", 0.0),
+             "p_over_15": r.get("p_over_15", 0.0),
+             "p_over_25": r.get("p_over_25", 0.0),
+             "e_hrr": r.get("e_hrr", 0.0)}
+            for i, r in enumerate(top_picks)
+        ],
+    }
+    with open(fname, "w") as f:
+        json.dump(out, f, indent=2)
+    return fname
+
+def load_all_results(results_dir="results"):
+    if not os.path.isdir(results_dir): return []
+    out = []
+    for fn in sorted(os.listdir(results_dir)):
+        if not fn.endswith(".json"): continue
+        try:
+            with open(os.path.join(results_dir, fn)) as f:
+                out.append(json.load(f))
+        except Exception:
+            continue
+    out.sort(key=lambda d: d.get("date", ""), reverse=True)
+    return out
+
+def aggregate_results(all_results, window_days=None, today_iso=None):
+    if window_days is not None and today_iso:
+        from_date = (dt.date.fromisoformat(today_iso) - dt.timedelta(days=window_days)).isoformat()
+        all_results = [r for r in all_results if r.get("date", "") >= from_date]
+    days = len(all_results)
+    graded = matched = played = o15 = o25 = wins = 0
+    ev_o15 = ev_o25 = ev_line = 0.0
+    for d in all_results:
+        s = d.get("summary", {}) or {}
+        graded  += int(s.get("graded", 0) or 0)
+        matched += int(s.get("matched", 0) or 0)
+        played  += int(s.get("played", 0) or 0)
+        o15     += int(s.get("over_15", 0) or 0)
+        o25     += int(s.get("over_25", 0) or 0)
+        wins    += int(s.get("wins_at_line", 0) or 0)
+        ev_o15  += float(s.get("ev_o15_sum", 0) or 0)
+        ev_o25  += float(s.get("ev_o25_sum", 0) or 0)
+        ev_line += float(s.get("ev_line_sum", 0) or 0)
+    pl = max(1, played)
+    return {"days": days, "graded": graded, "matched": matched, "played": played,
+            "over_15": o15, "over_25": o25, "wins": wins,
+            "over_15_rate": o15/pl if played else 0.0,
+            "over_25_rate": o25/pl if played else 0.0,
+            "wins_at_line_rate": wins/pl if played else 0.0,
+            "expected_over_15_rate": ev_o15/pl if played else 0.0,
+            "expected_over_25_rate": ev_o25/pl if played else 0.0,
+            "expected_wins_at_line_rate": ev_line/pl if played else 0.0,
+            "roi_at_line_pct": (wins/pl * 1.909 - 1.0) if played else 0.0}
+
+def build_track_record_html(today_iso, all_results):
+    if not all_results:
+        return ("<div style='margin:14px 0;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;"
+                "border-radius:8px;font-size:12px;color:#6b7280'>"
+                "<strong style='color:#111827'>Track Record:</strong> no graded picks yet "
+                "(first batch appears once a full slate of games has completed).</div>")
+    agg_all = aggregate_results(all_results)
+    agg_30  = aggregate_results(all_results, 30, today_iso)
+    agg_7   = aggregate_results(all_results, 7,  today_iso)
+    def row(label, a):
+        if not a["played"]:
+            return (f"<tr style='border-top:1px solid #f3f4f6'><td style='padding:5px 10px;color:#6b7280;font-weight:600'>{label}</td>"
+                    f"<td colspan='6' style='padding:5px 10px;color:#9ca3af;font-size:11px'>no graded picks in window</td></tr>")
+        edge = a["wins_at_line_rate"] - a["expected_wins_at_line_rate"]
+        edge_color = "#166534" if edge > 0.02 else "#991b1b" if edge < -0.02 else "#6b7280"
+        roi = a["roi_at_line_pct"]
+        roi_color = "#166534" if roi > 0.02 else "#991b1b" if roi < -0.02 else "#6b7280"
+        return (f"<tr style='border-top:1px solid #f3f4f6'>"
+                f"<td style='padding:5px 10px;color:#374151;font-weight:600'>{label}</td>"
+                f"<td style='padding:5px 10px;color:#6b7280'>{a['days']}d</td>"
+                f"<td style='padding:5px 10px;color:#6b7280'>{a['played']}/{a['graded']}</td>"
+                f"<td style='padding:5px 10px'><strong>{a['wins_at_line_rate']*100:.1f}%</strong> "
+                f"<span style='color:#9ca3af;font-size:11px'>({a['wins']}W)</span></td>"
+                f"<td style='padding:5px 10px;color:#6b7280'>{a['expected_wins_at_line_rate']*100:.1f}%</td>"
+                f"<td style='padding:5px 10px;font-weight:600;color:{edge_color}'>{edge*100:+.1f}%</td>"
+                f"<td style='padding:5px 10px;font-weight:600;color:{roi_color}'>{roi*100:+.1f}%</td>"
+                f"</tr>")
+    return (
+        f"<div style='margin:14px 0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden'>"
+        f"<div style='padding:10px 14px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-weight:700;color:#111827;font-size:13px'>"
+        f"Track Record &mdash; H+R+RBI hit rate at each pick&rsquo;s chosen line "
+        f"<span style='color:#9ca3af;font-weight:400;font-size:11px'>({len(all_results)} day{'s' if len(all_results)!=1 else ''} graded)</span>"
+        f"</div>"
+        f"<table style='width:100%;border-collapse:collapse;font-size:12px'>"
+        f"<thead style='color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left;background:#fafafa'>"
+        f"<tr><th style='padding:6px 10px'>Window</th><th style='padding:6px 10px'>Days</th>"
+        f"<th style='padding:6px 10px'>Played/Picks</th><th style='padding:6px 10px'>Actual Hit Rate</th>"
+        f"<th style='padding:6px 10px'>Expected</th><th style='padding:6px 10px'>Edge vs Model</th>"
+        f"<th style='padding:6px 10px'>ROI @ &minus;110</th></tr></thead>"
+        f"<tbody>{row('All time', agg_all)}{row('Last 30d', agg_30)}{row('Last 7d', agg_7)}</tbody>"
+        f"</table>"
+        f"</div>"
+    )
+
+def build_track_record_text(today_iso, all_results):
+    if not all_results:
+        return "Track Record: no graded picks yet."
+    a = aggregate_results(all_results)
+    if not a["played"]:
+        return "Track Record: no plays graded yet."
+    return (f"Track Record (all time): {a['days']} days, {a['played']}/{a['graded']} picks played, "
+            f"hit rate {a['wins_at_line_rate']*100:.1f}% (expected {a['expected_wins_at_line_rate']*100:.1f}%), "
+            f"ROI {a['roi_at_line_pct']*100:+.1f}% @ -110.")
+
 # =============== MAIN ===============
 
 def main():
@@ -858,6 +1121,15 @@ def main():
     DATE = et_today.isoformat()
     SEASON = et_today.year
     print(f"Running for date={DATE} (ET) season={SEASON}", flush=True)
+
+    # Grade yesterday's picks, if we have them and haven't graded them yet. Safe
+    # to call every run — it no-ops if the picks file is missing, if the results
+    # file already exists, or if yesterday's games aren't all Final yet.
+    try:
+        YDATE = (et_today - dt.timedelta(days=1)).isoformat()
+        grade_picks_for_date(YDATE)
+    except Exception as e:
+        print(f"  WARN: grading {YDATE} failed: {e}", file=sys.stderr)
 
     sched = get_schedule(DATE)
     games = (sched.get("dates", [{}])[0] or {}).get("games", [])
@@ -990,11 +1262,38 @@ def main():
         })
 
     rescored.sort(key=lambda x: -x["best_edge"])
+
+    # Dedupe: if a player is in a doubleheader (e.g. STL @ CIN twice today), they'd
+    # appear twice in the ranking — once per game. Keep only the higher-edge entry
+    # per (player_id, team) so each batter shows up at most once.
+    seen = set()
+    deduped = []
+    for r in rescored:
+        key = (r["_bid"], r["team"])
+        if key in seen: continue
+        seen.add(key)
+        deduped.append(r)
+    rescored = deduped
+
     top = rescored[:10]
 
+    # Snapshot today's top 15 to picks/{DATE}.json so tomorrow's run can grade them.
+    # We save 15 (not just the top 10 sent in email) because the user reasons about
+    # the top 15 on the dashboard and parlays.
+    try:
+        picks_file = save_picks(DATE, rescored[:15])
+        print(f"  wrote {picks_file} (top 15)", flush=True)
+    except Exception as e:
+        print(f"  WARN: could not write picks snapshot: {e}", file=sys.stderr)
+
+    # Build the running track record from any results/*.json files on disk.
+    all_results = load_all_results()
+    tr_html = build_track_record_html(DATE, all_results)
+    tr_text = build_track_record_text(DATE, all_results)
+
     stats = {"games": len(games), "candidates": len(rows), "qualified": len(qualified), "rostered": rostered}
-    html = build_email_html(DATE, top, stats)
-    text = build_email_text(DATE, top, stats)
+    html = build_email_html(DATE, top, stats, track_record_html=tr_html)
+    text = build_email_text(DATE, top, stats, track_record_line=tr_text)
     subject = f"MLB Prop Edge — Top 10 H+R+RBI for {DATE}"
 
     print(f"  scored {len(rows)} batters, {len(qualified)} qualified for prop board; sending top 10...", flush=True)
@@ -1007,7 +1306,7 @@ def main():
     try:
         os.makedirs("docs", exist_ok=True)
         dash_rows = rescored[:30]
-        dash_html = build_dashboard_html(DATE, dash_rows, stats)
+        dash_html = build_dashboard_html(DATE, dash_rows, stats, track_record_html=tr_html)
         with open("docs/index.html", "w", encoding="utf-8") as f:
             f.write(dash_html)
         print(f"  wrote docs/index.html ({len(dash_rows)} rows)", flush=True)

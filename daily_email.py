@@ -739,6 +739,111 @@ def build_email_text(date, rows, stats):
     lines.append("Park 0.92–1.20 · Weather 0.92–1.08 · Bullpen 0.95–1.05 net · BvP 0.85–1.20 (regressed)")
     return "\n".join(lines)
 
+def build_dashboard_html(date, rows, stats):
+    """Standalone dashboard HTML — same data as the email, just more rows and a timestamp.
+
+    Designed to be committed to docs/index.html and served via GitHub Pages.
+    Everything is inlined (no external assets) so it renders identically anywhere.
+    """
+    today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
+    gen_at_utc = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    rows_html = []
+    for i, r in enumerate(rows, 1):
+        status = ("&#9989; in" if r["in_lineup"] is True else "bench" if r["in_lineup"] is False else "&#9711; TBD")
+        edge_color = "#166534" if r["best_edge"] > 0.02 else "#991b1b" if r["best_edge"] < -0.02 else "#6b7280"
+        hand_str = f" ({r['ph']}HP)" if r["ph"] else ""
+        order_str = f"#{r['lineup_pos']}" if r["lineup_pos"] else "&mdash;"
+        s_hrr = (r["season_h_pa"] or 0) + (r["season_r_pa"] or 0) + (r["season_rbi_pa"] or 0)
+        rh = r.get("recent_h_pa"); rr = r.get("recent_r_pa"); rrbi = r.get("recent_rbi_pa")
+        recent_str = "&mdash;"; recent_color = "#9ca3af"
+        if rh is not None and r.get("recent_pa", 0) > 0 and s_hrr > 0:
+            r_hrr = rh + rr + rrbi
+            delta = (r_hrr - s_hrr) / s_hrr
+            arrow = "&#8593;" if delta > 0.10 else "&#8595;" if delta < -0.10 else "&#8594;"
+            recent_color = "#166534" if delta > 0.10 else "#991b1b" if delta < -0.10 else "#6b7280"
+            recent_str = f"{arrow} {delta*100:+.0f}% ({r.get('recent_pa')} PA)"
+        bvp_str = "&mdash;"; bvp_color = "#9ca3af"
+        if r.get("bvp_pa", 0) > 0:
+            bvp_color = "#166534" if r.get("bvp_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvp_mult", 1.0) < 0.98 else "#6b7280"
+            bvp_str = f"{r['bvp_mult']:.2f} ({r['bvp_pa']}PA)"
+        wx_str = r.get("weather_label") or "&mdash;"
+        rows_html.append(
+            f"<tr style='border-bottom:1px solid #f3f4f6'>"
+            f"<td style='padding:8px 10px;color:#9ca3af;font-size:11px'>{i}</td>"
+            f"<td style='padding:8px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(r['best_edge'])}</td>"
+            f"<td style='padding:8px 10px;font-size:11px'>{status}</td>"
+            f"<td style='padding:8px 10px'><strong>{r['name']}</strong> <span style='color:#9ca3af;font-size:11px'>{r['team']}</span> <span style='color:#9ca3af;font-size:11px'>{order_str}</span></td>"
+            f"<td style='padding:8px 10px'>vs {r['opp']}{hand_str} <span style='color:#9ca3af'>({r['game']})</span></td>"
+            f"<td style='padding:8px 10px;font-weight:600'>O{r['best_line']}</td>"
+            f"<td style='padding:8px 10px'>{r['e_hrr']:.2f}</td>"
+            f"<td style='padding:8px 10px;font-size:11px;color:{recent_color}'>{recent_str}</td>"
+            f"<td style='padding:8px 10px'>{fmt_pct(r['p_over_15'])}</td>"
+            f"<td style='padding:8px 10px'>{fmt_pct(r['p_over_25'])}</td>"
+            f"<td style='padding:8px 10px'>{r['hf']:.2f}</td>"
+            f"<td style='padding:8px 10px'>{r.get('park_mult', 1.0):.2f}<br/><span style='color:#9ca3af;font-size:10px'>{r.get('park_label','')}</span></td>"
+            f"<td style='padding:8px 10px;font-size:11px'>{r.get('weather_mult', 1.0):.2f}<br/><span style='color:#9ca3af;font-size:10px'>{wx_str}</span></td>"
+            f"<td style='padding:8px 10px'>{r.get('bullpen_mult', 1.0):.2f}</td>"
+            f"<td style='padding:8px 10px;font-size:11px;color:{bvp_color}'>{bvp_str}</td>"
+            f"<td style='padding:8px 10px'>{round(r['impact']*100)}%</td>"
+            f"</tr>"
+        )
+    return (
+        f"<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>MLB Prop Edge &mdash; {date}</title>"
+        f"</head>"
+        f"<body style='font-family:-apple-system,Helvetica,Arial,sans-serif;background:#fafafa;color:#1f2937;margin:0;padding:20px'>"
+        f"<div style='max-width:1200px;margin:0 auto'>"
+        f"<h1 style='font-size:22px;margin:0 0 4px'>MLB Prop Edge &mdash; Top {len(rows)} H+R+RBI</h1>"
+        f"<div style='color:#6b7280;font-size:13px;margin-bottom:6px'>{today_str} &middot; {stats['games']} games &middot; {stats['qualified']} qualified batters &middot; ranked by best edge vs &minus;110 break-even (52.4%)</div>"
+        f"<div style='color:#9ca3af;font-size:11px;margin-bottom:16px'>Generated {gen_at_utc} &middot; same model as the daily email</div>"
+        f"<div style='overflow-x:auto'>"
+        f"<table style='width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px'>"
+        f"<thead style='background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left'>"
+        f"<tr>"
+        f"<th style='padding:8px 10px'>#</th>"
+        f"<th style='padding:8px 10px'>Edge</th>"
+        f"<th style='padding:8px 10px'>Status</th>"
+        f"<th style='padding:8px 10px'>Batter (order)</th>"
+        f"<th style='padding:8px 10px'>Matchup</th>"
+        f"<th style='padding:8px 10px'>Line</th>"
+        f"<th style='padding:8px 10px'>E[HRR]</th>"
+        f"<th style='padding:8px 10px'>Recent 15d</th>"
+        f"<th style='padding:8px 10px'>P(O1.5)</th>"
+        f"<th style='padding:8px 10px'>P(O2.5)</th>"
+        f"<th style='padding:8px 10px'>Hand&times;</th>"
+        f"<th style='padding:8px 10px'>Park&times;</th>"
+        f"<th style='padding:8px 10px'>Wx&times;</th>"
+        f"<th style='padding:8px 10px'>BP&times;</th>"
+        f"<th style='padding:8px 10px'>BvP&times;</th>"
+        f"<th style='padding:8px 10px'>Cov</th>"
+        f"</tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody>"
+        f"</table>"
+        f"</div>"
+        f"<div style='margin-top:18px;font-size:12px;color:#4b5563;line-height:1.55'>"
+        f"<div style='font-weight:700;color:#111827;margin-bottom:6px'>How the projection is built</div>"
+        f"E[HRR] = expected_PA &times; (blended per-PA H/R/RBI rates) &times; Quality &times; Hand &times; Team &times; Park &times; Weather &times; Bullpen &times; BvP. "
+        f"P(O1.5) = P(HRR &ge; 2) and P(O2.5) = P(HRR &ge; 3) via Poisson with that expected value. "
+        f"Edge = best P(over) &minus; 52.4% (break-even at &minus;110 juice). "
+        f"Per-PA rates are blended from full-season and last-15-day rates using shrinkage toward season (weight = recent_PA / (recent_PA + 100))."
+        f"<div style='font-weight:700;color:#111827;margin:14px 0 6px'>Weight of each piece (multiplier range, typical impact)</div>"
+        f"<table style='border-collapse:collapse;font-size:12px'>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Expected PA (lineup slot)</td><td style='padding:3px 0'>3.75&ndash;4.55 &nbsp; <span style='color:#9ca3af'>(&asymp; &plusmn;10% swing leadoff vs 9-hole; the single biggest lever)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Quality multiplier (pitch-arsenal xwOBA)</td><td style='padding:3px 0'>0.75&ndash;1.35 &nbsp; <span style='color:#9ca3af'>(most observations &plusmn;10%; biggest skill input)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Handedness factor</td><td style='padding:3px 0'>0.85&ndash;1.20 &nbsp; <span style='color:#9ca3af'>(regressed by PA / (PA+50))</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Team offense (R/RBI only)</td><td style='padding:3px 0'>0.85&ndash;1.15 &nbsp; <span style='color:#9ca3af'>(team R/G vs league R/G)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Recent form blend</td><td style='padding:3px 0'>weight = recent_PA / (recent_PA + 100) &nbsp; <span style='color:#9ca3af'>(50 PA &asymp; 33% recent, 150 PA &asymp; 60% recent)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Park factor</td><td style='padding:3px 0'>0.92&ndash;1.20 &nbsp; <span style='color:#9ca3af'>(COL &asymp; 1.20, SD &asymp; 0.92; static table)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Weather</td><td style='padding:3px 0'>0.92&ndash;1.08 &nbsp; <span style='color:#9ca3af'>(temp&plusmn;wind-direction&plusmn;precip; dome=1.00; retractable half-weighted)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Bullpen quality (opp relievers)</td><td style='padding:3px 0'>0.95&ndash;1.05 net &nbsp; <span style='color:#9ca3af'>(raw 0.85&ndash;1.15 applied to ~35% of PA)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvP (batter vs pitcher career)</td><td style='padding:3px 0'>0.85&ndash;1.20 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+30); typically tiny impact &lt;5 PA)</span></td></tr>"
+        f"</table>"
+        f"<div style='margin-top:14px;color:#6b7280'>Status: <span style='color:#166534'>&#9989; in</span> = confirmed in lineup, <em>bench</em> = active roster but not in posted lineup, <span style='color:#92400e'>&#9711; TBD</span> = lineup not yet released. Coverage = share of the pitcher&rsquo;s mix where the batter has real Savant data.</div>"
+        f"</div>"
+        f"</div></body></html>"
+    )
+
 # =============== MAIN ===============
 
 def main():
@@ -895,6 +1000,19 @@ def main():
     print(f"  scored {len(rows)} batters, {len(qualified)} qualified for prop board; sending top 10...", flush=True)
     resp = send_email(api_key, recipient, subject, html, text)
     print(f"  sent: {resp}", flush=True)
+
+    # Also write a standalone dashboard with more rows (top 30) for GitHub Pages.
+    # Same model, same factors as the email — just more depth so you can scroll
+    # past the top 10 and see the next tier of candidates.
+    try:
+        os.makedirs("docs", exist_ok=True)
+        dash_rows = rescored[:30]
+        dash_html = build_dashboard_html(DATE, dash_rows, stats)
+        with open("docs/index.html", "w", encoding="utf-8") as f:
+            f.write(dash_html)
+        print(f"  wrote docs/index.html ({len(dash_rows)} rows)", flush=True)
+    except Exception as e:
+        print(f"  WARN: could not write dashboard: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

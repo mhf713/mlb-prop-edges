@@ -1,6 +1,6 @@
 {
   "date": "2026-05-24",
-  "generated_at_utc": "2026-05-24 11:02 UTC",
+  "generated_at_utc": "2026-05-24 14:34 UTC",
   "picks": [
     {
       "rank": 1,
@@ -12,10 +12,10 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.3053910064606862,
-      "p_over_15": 0.8293910064606862,
-      "p_over_25": 0.6210445529921156,
-      "e_hrr": 3.2045476388791494
+      "best_edge": 0.30621719433379757,
+      "p_over_15": 0.8302171943337976,
+      "p_over_25": 0.6223696464535944,
+      "e_hrr": 3.2109153098287746
     },
     {
       "rank": 2,
@@ -24,16 +24,31 @@
       "team": "PIT",
       "opp_pitcher": "Dylan Cease",
       "game": "PIT @ TOR",
-      "in_lineup": null,
-      "lineup_pos": null,
+      "in_lineup": true,
+      "lineup_pos": 2,
       "line": "1.5",
-      "best_edge": 0.28938745350268946,
-      "p_over_15": 0.8133874535026895,
-      "p_over_25": 0.5958816029936116,
-      "e_hrr": 3.0863803283504505
+      "best_edge": 0.3035208887666817,
+      "p_over_15": 0.8275208887666817,
+      "p_over_25": 0.6180548143286277,
+      "e_hrr": 3.1902362641006876
     },
     {
       "rank": 3,
+      "batter_id": "668715",
+      "name": "Spencer Steer",
+      "team": "CIN",
+      "opp_pitcher": "Matthew Liberatore",
+      "game": "STL @ CIN",
+      "in_lineup": true,
+      "lineup_pos": 4,
+      "line": "1.5",
+      "best_edge": 0.28726556306090967,
+      "p_over_15": 0.8112655630609097,
+      "p_over_25": 0.5926150816899659,
+      "e_hrr": 3.0714016811141462
+    },
+    {
+      "rank": 4,
       "batter_id": "606466",
       "name": "Ketel Marte",
       "team": "AZ",
@@ -46,21 +61,6 @@
       "p_over_15": 0.8001277568947739,
       "p_over_25": 0.5757248407686938,
       "e_hrr": 2.9951607062805663
-    },
-    {
-      "rank": 4,
-      "batter_id": "668715",
-      "name": "Spencer Steer",
-      "team": "CIN",
-      "opp_pitcher": "Matthew Liberatore",
-      "game": "STL @ CIN",
-      "in_lineup": null,
-      "lineup_pos": null,
-      "line": "1.5",
-      "best_edge": 0.2758316240352887,
-      "p_over_15": 0.7998316240352887,
-      "p_over_25": 0.5752815042625352,
-      "e_hrr": 2.993185726919929
     },
     {
       "rank": 5,
@@ -79,6 +79,21 @@
     },
     {
       "rank": 6,
+      "batter_id": "682829",
+      "name": "Elly De La Cruz",
+      "team": "CIN",
+      "opp_pitcher": "Matthew Liberatore",
+      "game": "STL @ CIN",
+      "in_lineup": true,
+      "lineup_pos": 2,
+      "line": "1.5",
+      "best_edge": 0.25462766610656207,
+      "p_over_15": 0.7786276661065621,
+      "p_over_25": 0.5442746263994246,
+      "e_hrr": 2.8580784837384576
+    },
+    {
+      "rank": 7,
       "batter_id": "642086",
       "name": "Dominic Smith",
       "team": "ATL",
@@ -87,13 +102,28 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.24211562624532035,
-      "p_over_15": 0.7661156262453204,
-      "p_over_25": 0.5266292476179848,
-      "e_hrr": 2.7836059159264916
+      "best_edge": 0.24996159258441908,
+      "p_over_15": 0.7739615925844191,
+      "p_over_25": 0.5376396124457862,
+      "e_hrr": 2.829885171152906
     },
     {
-      "rank": 7,
+      "rank": 8,
+      "batter_id": "701398",
+      "name": "Sal Stewart",
+      "team": "CIN",
+      "opp_pitcher": "Matthew Liberatore",
+      "game": "STL @ CIN",
+      "in_lineup": true,
+      "lineup_pos": 3,
+      "line": "1.5",
+      "best_edge": 0.24604589206188598,
+      "p_over_15": 0.770045892061886,
+      "p_over_25": 0.5321219566263701,
+      "e_hrr": 2.806616171111447
+    },
+    {
+      "rank": 9,
       "batter_id": "691023",
       "name": "Jordan Walker",
       "team": "STL",
@@ -102,13 +132,13 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.24173437613506688,
-      "p_over_15": 0.7657343761350669,
-      "p_over_25": 0.5260988336689555,
-      "e_hrr": 2.781391807630295
+      "best_edge": 0.24268503872112035,
+      "p_over_15": 0.7666850387211204,
+      "p_over_25": 0.5274222289953863,
+      "e_hrr": 2.7869186369393977
     },
     {
-      "rank": 8,
+      "rank": 10,
       "batter_id": "660271",
       "name": "Shohei Ohtani",
       "team": "LAD",
@@ -117,28 +147,28 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.2339690286116285,
-      "p_over_15": 0.7579690286116285,
-      "p_over_25": 0.5153862556045052,
-      "e_hrr": 2.736962767252271
+      "best_edge": 0.23652577637883176,
+      "p_over_15": 0.7605257763788318,
+      "p_over_25": 0.518894364838488,
+      "e_hrr": 2.751452625496304
     },
     {
-      "rank": 9,
+      "rank": 11,
       "batter_id": "663993",
       "name": "Nathaniel Lowe",
       "team": "CIN",
       "opp_pitcher": "Matthew Liberatore",
       "game": "STL @ CIN",
-      "in_lineup": null,
+      "in_lineup": false,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.23208667910526093,
-      "p_over_15": 0.756086679105261,
-      "p_over_25": 0.5128152812826345,
-      "e_hrr": 2.7263794697691117
+      "best_edge": 0.23305181827954025,
+      "p_over_15": 0.7570518182795403,
+      "p_over_25": 0.5141322555141318,
+      "e_hrr": 2.7317969855322333
     },
     {
-      "rank": 10,
+      "rank": 12,
       "batter_id": "668930",
       "name": "Brice Turang",
       "team": "MIL",
@@ -147,13 +177,13 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.22895015621451198,
-      "p_over_15": 0.752950156214512,
-      "p_over_25": 0.5085533363589685,
-      "e_hrr": 2.7089006882855724
+      "best_edge": 0.23152621453417532,
+      "p_over_15": 0.7555262145341753,
+      "p_over_25": 0.5120517014907608,
+      "e_hrr": 2.7232419820145433
     },
     {
-      "rank": 11,
+      "rank": 13,
       "batter_id": "606192",
       "name": "Teoscar Hern\u00e1ndez",
       "team": "LAD",
@@ -162,13 +192,13 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.22610019442505647,
-      "p_over_15": 0.7501001944250565,
-      "p_over_25": 0.5047044209212171,
-      "e_hrr": 2.693184243782239
+      "best_edge": 0.22868688963867134,
+      "p_over_15": 0.7526868896386714,
+      "p_over_25": 0.5081968508535193,
+      "e_hrr": 2.7074423324871306
     },
     {
-      "rank": 12,
+      "rank": 14,
       "batter_id": "670042",
       "name": "Luke Raley",
       "team": "SEA",
@@ -177,55 +207,25 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.22582183414831092,
-      "p_over_15": 0.7498218341483109,
-      "p_over_25": 0.5043296894291116,
-      "e_hrr": 2.6916574941396982
-    },
-    {
-      "rank": 13,
-      "batter_id": "701398",
-      "name": "Sal Stewart",
-      "team": "CIN",
-      "opp_pitcher": "Matthew Liberatore",
-      "game": "STL @ CIN",
-      "in_lineup": null,
-      "lineup_pos": null,
-      "line": "1.5",
-      "best_edge": 0.22226309360429697,
-      "p_over_15": 0.746263093604297,
-      "p_over_25": 0.4995575210736517,
-      "e_hrr": 2.6722663581068176
-    },
-    {
-      "rank": 14,
-      "batter_id": "682829",
-      "name": "Elly De La Cruz",
-      "team": "CIN",
-      "opp_pitcher": "Matthew Liberatore",
-      "game": "STL @ CIN",
-      "in_lineup": null,
-      "lineup_pos": null,
-      "line": "1.5",
-      "best_edge": 0.2200105690963774,
-      "p_over_15": 0.7440105690963774,
-      "p_over_25": 0.496554700829122,
-      "e_hrr": 2.660113195575446
+      "best_edge": 0.2252965446742774,
+      "p_over_15": 0.7492965446742774,
+      "p_over_25": 0.5036231176987259,
+      "e_hrr": 2.688780372173114
     },
     {
       "rank": 15,
-      "batter_id": "545121",
-      "name": "Ildemaro Vargas",
-      "team": "AZ",
-      "opp_pitcher": "Jose Quintana",
-      "game": "COL @ AZ",
+      "batter_id": "681624",
+      "name": "Andy Pages",
+      "team": "LAD",
+      "opp_pitcher": "Brandon Sproat",
+      "game": "LAD @ MIL",
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.21645737428132583,
-      "p_over_15": 0.7404573742813259,
-      "p_over_25": 0.4918456485582767,
-      "e_hrr": 2.641127796872928
+      "best_edge": 0.21821812525796214,
+      "p_over_15": 0.7422181252579622,
+      "p_over_25": 0.4941749576669666,
+      "e_hrr": 2.650507771894805
     }
   ]
 }

@@ -1382,6 +1382,37 @@ def save_picks(date_iso, top_picks, picks_dir="picks"):
         json.dump(out, f, indent=2)
     return fname
 
+def migrate_old_results(picks_dir="picks", results_dir="results"):
+    """Walk every results/*.json file once; re-grade any whose summary lacks the
+    current schema's 'started' field. Cheap when everything's already current
+    (just a file read each), expensive only when there's stale data to fix.
+
+    Called once per main() run so old days clean up automatically as the schema
+    evolves, without requiring a separate manual backfill.
+    """
+    if not os.path.isdir(results_dir):
+        return 0
+    migrated = 0
+    for fn in sorted(os.listdir(results_dir)):
+        if not fn.endswith(".json"):
+            continue
+        date_iso = fn[:-5]
+        try:
+            with open(os.path.join(results_dir, fn)) as f:
+                existing = json.load(f)
+        except Exception:
+            continue
+        if "started" in (existing.get("summary", {}) or {}):
+            continue  # already current
+        print(f"  migrating stale result file {date_iso}", flush=True)
+        try:
+            summary = grade_picks_for_date(date_iso, picks_dir=picks_dir, results_dir=results_dir)
+            if summary is not None:
+                migrated += 1
+        except Exception as e:
+            print(f"  WARN: could not migrate {date_iso}: {e}", file=sys.stderr)
+    return migrated
+
 def load_all_results(results_dir="results"):
     if not os.path.isdir(results_dir): return []
     out = []
@@ -1401,10 +1432,18 @@ def aggregate_results(all_results, window_days=None, today_iso=None):
     Everything is measured against the O1.5 H+R+RBI line, and ONLY picks where the
     player actually started (battingOrder ending in '00') contribute. Scratches,
     benchings, and substitute appearances are excluded entirely.
+
+    Result files written before the 'started'-aware schema landed are skipped
+    entirely here so the displayed numerator and denominator are always consistent.
+    Those stale files get re-graded automatically by migrate_old_results() on the
+    next workflow run.
     """
     if window_days is not None and today_iso:
         from_date = (dt.date.fromisoformat(today_iso) - dt.timedelta(days=window_days)).isoformat()
         all_results = [r for r in all_results if r.get("date", "") >= from_date]
+    # Skip old-schema files entirely; their over_15 count was scored under the
+    # 'played' branch (not 'started') and would inflate the numerator vs denominator.
+    all_results = [r for r in all_results if "started" in (r.get("summary", {}) or {})]
     days = len(all_results)
     graded = matched = played = started = o15 = o25 = 0
     ev_o15 = ev_o25 = 0.0
@@ -1505,6 +1544,17 @@ def main():
         grade_picks_for_date(YDATE)
     except Exception as e:
         print(f"  WARN: grading {YDATE} failed: {e}", file=sys.stderr)
+
+    # Migrate any older result files written under a previous schema. Cheap when
+    # everything's current; without this, old days' over_15 counts inflate the
+    # rolling numerator while their (missing) 'started' counts contribute 0 to
+    # the denominator, producing impossible ratios like 11/10.
+    try:
+        n = migrate_old_results()
+        if n:
+            print(f"  migrated {n} stale result file(s) to current schema", flush=True)
+    except Exception as e:
+        print(f"  WARN: migrate_old_results failed: {e}", file=sys.stderr)
 
     sched = get_schedule(DATE)
     games = (sched.get("dates", [{}])[0] or {}).get("games", [])

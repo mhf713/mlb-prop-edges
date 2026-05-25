@@ -895,7 +895,12 @@ def build_results_index(date_iso):
                 name = person.get("fullName", "") or ""
                 bat = (pdata.get("stats") or {}).get("batting") or {}
                 pa = int(bat.get("plateAppearances", 0) or 0)
-                rec = {
+                # MLB Stats API: batting order is a 3-digit string like "100", "200" for
+                # starters (#1 through #9 slots); subs are "101", "202", etc. So a starter
+                # is anyone whose battingOrder ends in "00".
+                batting_order = pdata.get("battingOrder")
+                started = bool(batting_order) and str(batting_order).endswith("00")
+                new_rec = {
                     "batter_id": pid, "name": name,
                     "hits":  int(bat.get("hits", 0) or 0),
                     "runs":  int(bat.get("runs", 0) or 0),
@@ -903,21 +908,53 @@ def build_results_index(date_iso):
                     "ab":    int(bat.get("atBats", 0) or 0),
                     "pa":    pa,
                     "played": pa > 0,
+                    "started": started,
                 }
-                if pid:
-                    tbucket[pid] = rec
-                tbucket[_normalize_name(name)] = rec
+                # Doubleheader aggregation: if this player already has a record (because
+                # they appeared in an earlier game today), merge stats and OR the flags.
+                existing = tbucket.get(pid) if pid else None
+                if existing is None:
+                    existing = tbucket.get(_normalize_name(name))
+                if existing is None:
+                    if pid:
+                        tbucket[pid] = new_rec
+                    tbucket[_normalize_name(name)] = new_rec
+                else:
+                    existing["hits"]    += new_rec["hits"]
+                    existing["runs"]    += new_rec["runs"]
+                    existing["rbi"]     += new_rec["rbi"]
+                    existing["ab"]      += new_rec["ab"]
+                    existing["pa"]      += new_rec["pa"]
+                    existing["played"]  = existing["played"]  or new_rec["played"]
+                    existing["started"] = existing["started"] or new_rec["started"]
     return out
 
 def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
     """If picks/{date}.json exists and results/{date}.json does not, fetch actual box
-    scores for that day and write graded results. Returns the summary dict or None."""
+    scores for that day and write graded results. Returns the summary dict or None.
+
+    Counts only picks whose player STARTED that day's game (battingOrder ending in '00').
+    Players who were scratched, benched, or only came in as substitutes are excluded.
+    Everything is graded against the O1.5 line (the user's chosen prop line).
+
+    Auto-regrades old results files that lack the 'started' field so the on-disk
+    ledger matches the current schema.
+    """
     picks_file = os.path.join(picks_dir, f"{date_iso}.json")
     results_file = os.path.join(results_dir, f"{date_iso}.json")
     if not os.path.exists(picks_file):
         return None
+    # If a results file exists in the current (started-aware) schema, skip.
+    # Otherwise re-grade so older files migrate automatically.
     if os.path.exists(results_file):
-        return None
+        try:
+            with open(results_file) as f:
+                existing = json.load(f)
+            if "started" in (existing.get("summary", {}) or {}):
+                return None
+            print(f"  {date_iso}: re-grading (old results schema)", flush=True)
+        except Exception:
+            pass
     try:
         with open(picks_file) as f:
             picks_data = json.load(f)
@@ -930,8 +967,8 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
         return None
 
     results = []
-    sums = {"graded": 0, "matched": 0, "played": 0, "over_15": 0, "over_25": 0,
-            "wins_at_line": 0, "ev_o15_sum": 0.0, "ev_o25_sum": 0.0, "ev_line_sum": 0.0}
+    sums = {"graded": 0, "matched": 0, "played": 0, "started": 0,
+            "over_15": 0, "over_25": 0, "ev_o15_sum": 0.0, "ev_o25_sum": 0.0}
     for p in picks_data.get("picks", []):
         team = p.get("team", "")
         nm = p.get("name", "")
@@ -945,46 +982,42 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
                 rec = tidx.get(_normalize_name(nm))
         sums["graded"] += 1
         if rec is None:
-            results.append({**p, "matched": False, "played": False, "hrr": None})
+            results.append({**p, "matched": False, "played": False, "started": False, "hrr": None})
             continue
         h, r_, rbi = rec["hits"], rec["runs"], rec["rbi"]
         hrr = h + r_ + rbi
         played = bool(rec["played"])
-        line = str(p.get("line") or "1.5")
-        over_15 = played and hrr >= 2
-        over_25 = played and hrr >= 3
-        win_at_line = over_15 if line == "1.5" else over_25
-        results.append({**p, "matched": True, "played": played,
+        started = bool(rec.get("started"))
+        over_15 = started and hrr >= 2
+        over_25 = started and hrr >= 3
+        results.append({**p, "matched": True, "played": played, "started": started,
                         "hits": h, "runs": r_, "rbi": rbi, "hrr": hrr,
-                        "over_15": over_15, "over_25": over_25,
-                        "win_at_line": win_at_line})
+                        "over_15": over_15, "over_25": over_25})
         sums["matched"] += 1
         if played:
             sums["played"] += 1
+        if started:
+            sums["started"] += 1
             if over_15: sums["over_15"] += 1
             if over_25: sums["over_25"] += 1
-            if win_at_line: sums["wins_at_line"] += 1
-            sums["ev_o15_sum"]  += float(p.get("p_over_15") or 0.0)
-            sums["ev_o25_sum"]  += float(p.get("p_over_25") or 0.0)
-            sums["ev_line_sum"] += float((p.get("p_over_15") if line == "1.5" else p.get("p_over_25")) or 0.0)
-    pl = max(1, sums["played"])
+            sums["ev_o15_sum"] += float(p.get("p_over_15") or 0.0)
+            sums["ev_o25_sum"] += float(p.get("p_over_25") or 0.0)
+    st = max(1, sums["started"])
     summary = {
         **sums,
-        "over_15_rate": sums["over_15"]/pl if sums["played"] else 0.0,
-        "over_25_rate": sums["over_25"]/pl if sums["played"] else 0.0,
-        "wins_at_line_rate": sums["wins_at_line"]/pl if sums["played"] else 0.0,
-        "expected_over_15_rate": sums["ev_o15_sum"]/pl if sums["played"] else 0.0,
-        "expected_over_25_rate": sums["ev_o25_sum"]/pl if sums["played"] else 0.0,
-        "expected_wins_at_line_rate": sums["ev_line_sum"]/pl if sums["played"] else 0.0,
-        "roi_at_line_pct": (sums["wins_at_line"]/pl * 1.909 - 1.0) if sums["played"] else 0.0,
+        "over_15_rate":          sums["over_15"]/st if sums["started"] else 0.0,
+        "over_25_rate":          sums["over_25"]/st if sums["started"] else 0.0,
+        "expected_over_15_rate": sums["ev_o15_sum"]/st if sums["started"] else 0.0,
+        "expected_over_25_rate": sums["ev_o25_sum"]/st if sums["started"] else 0.0,
+        "roi_o15_pct":           (sums["over_15"]/st * 1.909 - 1.0) if sums["started"] else 0.0,
     }
     os.makedirs(results_dir, exist_ok=True)
     with open(results_file, "w") as f:
         json.dump({"date": date_iso,
                    "graded_at_utc": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
                    "results": results, "summary": summary}, f, indent=2)
-    print(f"  graded {date_iso}: {sums['wins_at_line']}/{sums['played']} wins at picked line "
-          f"(expected {summary['expected_wins_at_line_rate']*100:.1f}%, ROI {summary['roi_at_line_pct']*100:+.1f}%)", flush=True)
+    print(f"  graded {date_iso}: {sums['over_15']}/{sums['started']} over 1.5 H+R+RBI among starters "
+          f"(expected {summary['expected_over_15_rate']*100:.1f}%, ROI {summary['roi_o15_pct']*100:+.1f}%)", flush=True)
     return summary
 
 def save_picks(date_iso, top_picks, picks_dir="picks"):
@@ -1025,33 +1058,37 @@ def load_all_results(results_dir="results"):
     return out
 
 def aggregate_results(all_results, window_days=None, today_iso=None):
+    """Aggregate per-day result summaries into a rolling view.
+
+    Everything is measured against the O1.5 H+R+RBI line, and ONLY picks where the
+    player actually started (battingOrder ending in '00') contribute. Scratches,
+    benchings, and substitute appearances are excluded entirely.
+    """
     if window_days is not None and today_iso:
         from_date = (dt.date.fromisoformat(today_iso) - dt.timedelta(days=window_days)).isoformat()
         all_results = [r for r in all_results if r.get("date", "") >= from_date]
     days = len(all_results)
-    graded = matched = played = o15 = o25 = wins = 0
-    ev_o15 = ev_o25 = ev_line = 0.0
+    graded = matched = played = started = o15 = o25 = 0
+    ev_o15 = ev_o25 = 0.0
     for d in all_results:
         s = d.get("summary", {}) or {}
         graded  += int(s.get("graded", 0) or 0)
         matched += int(s.get("matched", 0) or 0)
         played  += int(s.get("played", 0) or 0)
+        started += int(s.get("started", 0) or 0)
         o15     += int(s.get("over_15", 0) or 0)
         o25     += int(s.get("over_25", 0) or 0)
-        wins    += int(s.get("wins_at_line", 0) or 0)
         ev_o15  += float(s.get("ev_o15_sum", 0) or 0)
         ev_o25  += float(s.get("ev_o25_sum", 0) or 0)
-        ev_line += float(s.get("ev_line_sum", 0) or 0)
-    pl = max(1, played)
-    return {"days": days, "graded": graded, "matched": matched, "played": played,
-            "over_15": o15, "over_25": o25, "wins": wins,
-            "over_15_rate": o15/pl if played else 0.0,
-            "over_25_rate": o25/pl if played else 0.0,
-            "wins_at_line_rate": wins/pl if played else 0.0,
-            "expected_over_15_rate": ev_o15/pl if played else 0.0,
-            "expected_over_25_rate": ev_o25/pl if played else 0.0,
-            "expected_wins_at_line_rate": ev_line/pl if played else 0.0,
-            "roi_at_line_pct": (wins/pl * 1.909 - 1.0) if played else 0.0}
+    st = max(1, started)
+    return {"days": days, "graded": graded, "matched": matched,
+            "played": played, "started": started,
+            "over_15": o15, "over_25": o25,
+            "over_15_rate":          o15/st if started else 0.0,
+            "over_25_rate":          o25/st if started else 0.0,
+            "expected_over_15_rate": ev_o15/st if started else 0.0,
+            "expected_over_25_rate": ev_o25/st if started else 0.0,
+            "roi_o15_pct":           (o15/st * 1.909 - 1.0) if started else 0.0}
 
 def build_track_record_html(today_iso, all_results):
     if not all_results:
@@ -1063,27 +1100,26 @@ def build_track_record_html(today_iso, all_results):
     agg_30  = aggregate_results(all_results, 30, today_iso)
     agg_7   = aggregate_results(all_results, 7,  today_iso)
     def row(label, a):
-        if not a["played"]:
+        if not a["started"]:
             return (f"<tr style='border-top:1px solid #f3f4f6'><td style='padding:5px 10px;color:#6b7280;font-weight:600'>{label}</td>"
-                    f"<td colspan='6' style='padding:5px 10px;color:#9ca3af;font-size:11px'>no graded picks in window</td></tr>")
-        edge = a["wins_at_line_rate"] - a["expected_wins_at_line_rate"]
+                    f"<td colspan='6' style='padding:5px 10px;color:#9ca3af;font-size:11px'>no starters in window</td></tr>")
+        edge = a["over_15_rate"] - a["expected_over_15_rate"]
         edge_color = "#166534" if edge > 0.02 else "#991b1b" if edge < -0.02 else "#6b7280"
-        roi = a["roi_at_line_pct"]
+        roi = a["roi_o15_pct"]
         roi_color = "#166534" if roi > 0.02 else "#991b1b" if roi < -0.02 else "#6b7280"
         return (f"<tr style='border-top:1px solid #f3f4f6'>"
                 f"<td style='padding:5px 10px;color:#374151;font-weight:600'>{label}</td>"
                 f"<td style='padding:5px 10px;color:#6b7280'>{a['days']}d</td>"
-                f"<td style='padding:5px 10px;color:#6b7280'><strong style='color:#374151'>{a['over_15']}</strong>/{a['graded']}</td>"
-                f"<td style='padding:5px 10px'><strong>{a['wins_at_line_rate']*100:.1f}%</strong> "
-                f"<span style='color:#9ca3af;font-size:11px'>({a['wins']}W)</span></td>"
-                f"<td style='padding:5px 10px;color:#6b7280'>{a['expected_wins_at_line_rate']*100:.1f}%</td>"
+                f"<td style='padding:5px 10px;color:#6b7280'><strong style='color:#374151'>{a['over_15']}</strong>/{a['started']}</td>"
+                f"<td style='padding:5px 10px'><strong>{a['over_15_rate']*100:.1f}%</strong></td>"
+                f"<td style='padding:5px 10px;color:#6b7280'>{a['expected_over_15_rate']*100:.1f}%</td>"
                 f"<td style='padding:5px 10px;font-weight:600;color:{edge_color}'>{edge*100:+.1f}%</td>"
                 f"<td style='padding:5px 10px;font-weight:600;color:{roi_color}'>{roi*100:+.1f}%</td>"
                 f"</tr>")
     return (
         f"<div style='margin:14px 0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden'>"
         f"<div style='padding:10px 14px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-weight:700;color:#111827;font-size:13px'>"
-        f"Track Record &mdash; H+R+RBI hit rate at each pick&rsquo;s chosen line "
+        f"Track Record &mdash; Over 1.5 H+R+RBI (starters only) "
         f"<span style='color:#9ca3af;font-weight:400;font-size:11px'>({len(all_results)} day{'s' if len(all_results)!=1 else ''} graded)</span>"
         f"</div>"
         f"<table style='width:100%;border-collapse:collapse;font-size:12px'>"
@@ -1101,11 +1137,12 @@ def build_track_record_text(today_iso, all_results):
     if not all_results:
         return "Track Record: no graded picks yet."
     a = aggregate_results(all_results)
-    if not a["played"]:
-        return "Track Record: no plays graded yet."
-    return (f"Track Record (all time): {a['days']} days, {a['played']}/{a['graded']} picks played, "
-            f"hit rate {a['wins_at_line_rate']*100:.1f}% (expected {a['expected_wins_at_line_rate']*100:.1f}%), "
-            f"ROI {a['roi_at_line_pct']*100:+.1f}% @ -110.")
+    if not a["started"]:
+        return "Track Record: no starters graded yet."
+    return (f"Track Record (all time, starters only, vs O1.5): {a['days']} days, "
+            f"{a['over_15']}/{a['started']} over 1.5 "
+            f"({a['over_15_rate']*100:.1f}%, expected {a['expected_over_15_rate']*100:.1f}%), "
+            f"ROI {a['roi_o15_pct']*100:+.1f}% @ -110.")
 
 # =============== MAIN ===============
 

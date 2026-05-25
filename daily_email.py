@@ -160,6 +160,96 @@ def get_bvp(batter_id, pitcher_id):
     except Exception:
         return None
 
+def get_bvt(batter_id, opp_team_id):
+    """Career batter-vs-team splits. Stronger sample than BvP — divisional rivals can
+    accumulate hundreds of PA over a career. Uses MLB Stats API stats=vsTeam endpoint.
+    """
+    try:
+        d = json.loads(fetch(
+            f"https://statsapi.mlb.com/api/v1/people/{batter_id}/stats?stats=vsTeam"
+            f"&group=hitting&opposingTeamId={opp_team_id}&sportId=1",
+            timeout=15
+        ))
+        splits = (d.get("stats", [{}])[0] or {}).get("splits", [])
+        agg = {"plateAppearances": 0, "hits": 0, "doubles": 0, "triples": 0, "homeRuns": 0,
+               "baseOnBalls": 0, "intentionalWalks": 0, "hitByPitch": 0}
+        for s in splits:
+            st = s.get("stat", {})
+            for k in agg:
+                agg[k] += st.get(k, 0) or 0
+        return agg
+    except Exception:
+        return None
+
+_TEAM_VENUE_CACHE = {}
+
+def _get_team_venue_map():
+    """Cached team_id -> home venue_id lookup. Used to derive each gameLog row's
+    venue (the gameLog response itself doesn't include venue.id, only isHome and
+    opponent.id, so home games map via the batter's team and away games via the
+    opponent's team)."""
+    global _TEAM_VENUE_CACHE
+    if _TEAM_VENUE_CACHE:
+        return _TEAM_VENUE_CACHE
+    try:
+        d = json.loads(fetch("https://statsapi.mlb.com/api/v1/teams?sportId=1&activeStatus=Y"))
+        for t in d.get("teams", []):
+            v = (t.get("venue") or {}).get("id")
+            if v:
+                _TEAM_VENUE_CACHE[t["id"]] = v
+    except Exception:
+        pass
+    return _TEAM_VENUE_CACHE
+
+def get_bvs(batter_id, venue_id, seasons):
+    """Career batter stats at a specific venue, aggregated from per-season gameLog.
+
+    The MLB Stats API doesn't expose a direct 'career-by-venue' endpoint, and gameLog
+    rows don't include venue.id directly. We derive it: home games map to the batter's
+    own team's home venue at the time of the game, away games map to the opponent
+    team's home venue. Then we filter to splits whose derived venue matches the
+    target and sum hitting stats. Sample sizes are usually modest (15-30 PA per
+    visiting park per 2 years), so the downstream shrinkage prior is large.
+    """
+    if not venue_id:
+        return None
+    team_venue = _get_team_venue_map()
+    if not team_venue:
+        return None
+    agg = {"plateAppearances": 0, "hits": 0, "doubles": 0, "triples": 0, "homeRuns": 0,
+           "baseOnBalls": 0, "intentionalWalks": 0, "hitByPitch": 0,
+           "runs": 0, "rbi": 0, "games": 0}
+    any_found = False
+    for season in seasons:
+        try:
+            d = json.loads(fetch(
+                f"https://statsapi.mlb.com/api/v1/people/{batter_id}/stats?stats=gameLog"
+                f"&group=hitting&season={season}&sportId=1",
+                timeout=15
+            ))
+            splits = (d.get("stats", [{}])[0] or {}).get("splits", [])
+            for s in splits:
+                is_home = s.get("isHome")
+                if is_home is True:
+                    own_tid = (s.get("team") or {}).get("id")
+                    game_venue = team_venue.get(own_tid)
+                elif is_home is False:
+                    opp_tid = (s.get("opponent") or {}).get("id")
+                    game_venue = team_venue.get(opp_tid)
+                else:
+                    continue
+                if game_venue != venue_id:
+                    continue
+                any_found = True
+                st = s.get("stat", {}) or {}
+                agg["games"] += 1
+                for k in ("plateAppearances", "hits", "doubles", "triples", "homeRuns",
+                          "baseOnBalls", "intentionalWalks", "hitByPitch", "runs", "rbi"):
+                    agg[k] += int(st.get(k, 0) or 0)
+        except Exception:
+            continue
+    return agg if any_found else None
+
 def get_weather(lat, lon, date_iso):
     """Open-Meteo daily forecast (no auth). Returns hourly arrays for the date."""
     try:
@@ -472,6 +562,69 @@ def bvp_factor(bvp_stats, batter_season_woba):
     factor = max(0.85, min(1.20, factor))
     return factor, pa, bvp_woba
 
+def bvt_factor(bvt_stats, batter_season_woba):
+    """Career batter-vs-team factor, regressed by PA/(PA+100). Capped 0.90–1.15.
+
+    BvT samples are typically larger than BvP (a hitter sees a team 15-19 times/year
+    across all pitchers), so the prior is heavier but the cap is tighter — most of
+    the BvP/handedness signal is already captured elsewhere, this is the residual.
+    Returns (factor, pa, bvt_woba_or_None).
+    """
+    if not bvt_stats or not batter_season_woba or batter_season_woba <= 0:
+        return 1.0, 0, None
+    pa = bvt_stats.get("plateAppearances", 0) or 0
+    if pa <= 0:
+        return 1.0, 0, None
+    iw = bvt_stats.get("intentionalWalks", 0) or 0
+    den = pa - iw
+    if den <= 0:
+        return 1.0, pa, None
+    ubb = (bvt_stats.get("baseOnBalls", 0) or 0) - iw
+    hbp = bvt_stats.get("hitByPitch", 0) or 0
+    h   = bvt_stats.get("hits", 0) or 0
+    ds  = bvt_stats.get("doubles", 0) or 0
+    ts  = bvt_stats.get("triples", 0) or 0
+    hr  = bvt_stats.get("homeRuns", 0) or 0
+    ones = max(0, h - ds - ts - hr)
+    bvt_woba = (W["uBB"]*ubb + W["HBP"]*hbp + W["1B"]*ones + W["2B"]*ds + W["3B"]*ts + W["HR"]*hr) / den
+    weight = pa / (pa + 100.0)
+    raw = bvt_woba / batter_season_woba
+    factor = 1.0 + weight * (raw - 1.0)
+    factor = max(0.90, min(1.15, factor))
+    return factor, pa, bvt_woba
+
+def bvs_factor(bvs_stats, batter_season_woba):
+    """Career batter-at-venue factor, regressed by PA/(PA+150). Capped 0.92–1.08.
+
+    Visitor stadium samples are small (15-30 PA over 2 years for a non-rival), so the
+    prior is heaviest of the three and the cap is the tightest. The park factor table
+    already captures venue-wide offense; this is the residual player-specific tendency
+    at a particular park (Judge at Fenway, Bregman in his home park, etc.).
+    Returns (factor, pa, bvs_woba_or_None).
+    """
+    if not bvs_stats or not batter_season_woba or batter_season_woba <= 0:
+        return 1.0, 0, None
+    pa = bvs_stats.get("plateAppearances", 0) or 0
+    if pa <= 0:
+        return 1.0, 0, None
+    iw = bvs_stats.get("intentionalWalks", 0) or 0
+    den = pa - iw
+    if den <= 0:
+        return 1.0, pa, None
+    ubb = (bvs_stats.get("baseOnBalls", 0) or 0) - iw
+    hbp = bvs_stats.get("hitByPitch", 0) or 0
+    h   = bvs_stats.get("hits", 0) or 0
+    ds  = bvs_stats.get("doubles", 0) or 0
+    ts  = bvs_stats.get("triples", 0) or 0
+    hr  = bvs_stats.get("homeRuns", 0) or 0
+    ones = max(0, h - ds - ts - hr)
+    bvs_woba = (W["uBB"]*ubb + W["HBP"]*hbp + W["1B"]*ones + W["2B"]*ds + W["3B"]*ts + W["HR"]*hr) / den
+    weight = pa / (pa + 150.0)
+    raw = bvs_woba / batter_season_woba
+    factor = 1.0 + weight * (raw - 1.0)
+    factor = max(0.92, min(1.08, factor))
+    return factor, pa, bvs_woba
+
 # =============== xwOBA MATCHUP ===============
 
 def matchup_xwoba(batters, pitchers, league_mix, league_xwoba, bid, pid):
@@ -515,7 +668,9 @@ def project_hrr(bid, pid, lineup_pos, batters, pitchers, league_mix, league_xwob
                 season, team_rpg_map, league_rpg, team_id_of_batter, recent_hit=None,
                 park_mult=1.0, weather_mult=1.0, weather_label="",
                 bullpen_mult=1.0, bullpen_ratio=1.0,
-                bvp_mult=1.0, bvp_pa=0, bvp_woba=None):
+                bvp_mult=1.0, bvp_pa=0, bvp_woba=None,
+                bvt_mult=1.0, bvt_pa=0, bvt_woba=None,
+                bvs_mult=1.0, bvs_pa=0, bvs_woba=None):
     """Project expected H+R+RBI for a batter against today's pitcher, and prob of over lines."""
     base_xw = matchup_xwoba(batters, pitchers, league_mix, league_xwoba, bid, pid)
     if not base_xw: return None
@@ -543,7 +698,7 @@ def project_hrr(bid, pid, lineup_pos, batters, pitchers, league_mix, league_xwob
     blended = blend_season_recent(season_stats, (recent_hit or {}).get(bid))
 
     # Combined environment multiplier applied uniformly to H/R/RBI.
-    env_mult = park_mult * weather_mult * bullpen_mult * bvp_mult
+    env_mult = park_mult * weather_mult * bullpen_mult * bvp_mult * bvt_mult * bvs_mult
 
     # Adjusted per-PA rates use the blended (season + recent) rates.
     adj_h   = blended["H_pa"]   * quality_mult * hf * env_mult
@@ -575,6 +730,8 @@ def project_hrr(bid, pid, lineup_pos, batters, pitchers, league_mix, league_xwob
         "weather_mult": weather_mult, "weather_label": weather_label,
         "bullpen_mult": bullpen_mult, "bullpen_ratio": bullpen_ratio,
         "bvp_mult": bvp_mult, "bvp_pa": bvp_pa, "bvp_woba": bvp_woba,
+        "bvt_mult": bvt_mult, "bvt_pa": bvt_pa, "bvt_woba": bvt_woba,
+        "bvs_mult": bvs_mult, "bvs_pa": bvs_pa, "bvs_woba": bvs_woba,
         "env_mult": env_mult,
         "expected_pa": pa, "lineup_pos": lineup_pos,
         "season_pa": season_stats["PA"],
@@ -619,6 +776,158 @@ def send_email(api_key, to_email, subject, html_body, text_body):
 def fmt_pct(p): return f"{p*100:.1f}%"
 def fmt_edge_pct(e): return f"{e*100:+.1f}%"
 
+def _build_top5_commentary_block(rows):
+    """Render the 'Why these picks?' section for the top 5 picks (or all rows if fewer)."""
+    if not rows:
+        return ""
+    items = []
+    for i, r in enumerate(rows[:5], 1):
+        commentary = build_pick_commentary(r)
+        items.append(
+            f"<li style='margin:0 0 10px 0;line-height:1.5'>"
+            f"<span style='color:#9ca3af;font-weight:600;margin-right:6px'>{i}.</span>"
+            f"<span>{commentary}</span>"
+            f"</li>"
+        )
+    return (
+        f"<div style='margin:14px 0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden'>"
+        f"<div style='padding:10px 14px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-weight:700;color:#111827;font-size:13px'>"
+        f"Why these picks? &mdash; commentary on the top {len(rows[:5])}"
+        f"</div>"
+        f"<ol style='margin:0;padding:12px 18px 12px 32px;font-size:12px;color:#374151;list-style:none'>"
+        f"{''.join(items)}"
+        f"</ol>"
+        f"</div>"
+    )
+
+def build_pick_commentary(r):
+    """Return a 2-sentence plain-English explanation of why this pick has its edge.
+
+    Sentence 1: the dominant factor(s) driving the projection — boosters first, then
+    drags, picking only factors whose multiplier is at least ±5% out of neutral so we
+    don't bury the reader in 1.00x noise.
+    Sentence 2: the resulting numerical projection (E[HRR], P(over), edge vs -110)
+    plus any meaningful context (lineup slot, recent form, coverage).
+    """
+    name = r.get("name", "?")
+    team = r.get("team", "?")
+    opp  = r.get("opp", "?")
+    line = r.get("best_line", "1.5")
+    p_over = r.get("p_over_15", 0.0) if line == "1.5" else r.get("p_over_25", 0.0)
+    edge = r.get("best_edge", 0.0) * 100
+    e_hrr = r.get("e_hrr", 0.0)
+    park_label = r.get("park_label", "")
+    opp_team = r.get("opp_team", "")
+
+    boosters = []   # factor descriptions where mult >= 1.05
+    drags    = []   # factor descriptions where mult <= 0.95
+    notes    = []   # context (PA, lineup slot, recent form, coverage)
+
+    # Pitcher-matchup quality (xwOBA-derived)
+    qm = r.get("quality_mult", 1.0)
+    if qm >= 1.08:
+        boosters.append(f"strong pitch-arsenal matchup vs {opp} (Quality &times;{qm:.2f})")
+    elif qm <= 0.92:
+        drags.append(f"poor pitch-arsenal matchup vs {opp} (Quality &times;{qm:.2f})")
+
+    # Handedness
+    ph = r.get("ph")
+    hf = r.get("hf", 1.0)
+    if hf >= 1.08 and ph:
+        boosters.append(f"big platoon edge vs {ph}HP (&times;{hf:.2f})")
+    elif hf <= 0.92 and ph:
+        drags.append(f"tough handedness matchup vs {ph}HP (&times;{hf:.2f})")
+
+    # Park
+    pm = r.get("park_mult", 1.0)
+    if pm >= 1.05:
+        boosters.append(f"hitter-friendly park at {park_label} (&times;{pm:.2f})")
+    elif pm <= 0.95:
+        drags.append(f"pitcher-friendly park at {park_label} (&times;{pm:.2f})")
+
+    # Weather
+    wm = r.get("weather_mult", 1.0)
+    wl = r.get("weather_label", "") or ""
+    if wm >= 1.03:
+        boosters.append(f"favorable weather ({wl}, &times;{wm:.2f})")
+    elif wm <= 0.97:
+        drags.append(f"unfavorable weather ({wl}, &times;{wm:.2f})")
+
+    # Bullpen
+    bp = r.get("bullpen_mult", 1.0)
+    if bp >= 1.02:
+        boosters.append(f"weak opposing bullpen (&times;{bp:.2f})")
+    elif bp <= 0.98:
+        drags.append(f"strong opposing bullpen (&times;{bp:.2f})")
+
+    # BvP (only mention with PA >= 5; otherwise tiny sample noise)
+    if r.get("bvp_pa", 0) >= 5:
+        bvpm = r.get("bvp_mult", 1.0)
+        if bvpm >= 1.05:
+            boosters.append(f"strong career vs this pitcher ({r['bvp_pa']}PA, &times;{bvpm:.2f})")
+        elif bvpm <= 0.95:
+            drags.append(f"poor career vs this pitcher ({r['bvp_pa']}PA, &times;{bvpm:.2f})")
+
+    # BvT (only mention with PA >= 30; samples are larger than BvP)
+    if r.get("bvt_pa", 0) >= 30:
+        bvtm = r.get("bvt_mult", 1.0)
+        if bvtm >= 1.04:
+            boosters.append(f"hits {opp_team or 'this team'} well over his career ({r['bvt_pa']}PA, &times;{bvtm:.2f})")
+        elif bvtm <= 0.96:
+            drags.append(f"poor career vs {opp_team or 'this team'} ({r['bvt_pa']}PA, &times;{bvtm:.2f})")
+
+    # BvS (only mention with PA >= 20; samples are smallest of the three)
+    if r.get("bvs_pa", 0) >= 20:
+        bvsm = r.get("bvs_mult", 1.0)
+        if bvsm >= 1.04:
+            boosters.append(f"thrives at {park_label} ({r['bvs_pa']}PA in last 2 seasons, &times;{bvsm:.2f})")
+        elif bvsm <= 0.96:
+            drags.append(f"struggles at {park_label} ({r['bvs_pa']}PA in last 2 seasons, &times;{bvsm:.2f})")
+
+    # Recent-form delta (last 15 days vs season per-PA HRR rate)
+    s_hrr = (r.get("season_h_pa") or 0) + (r.get("season_r_pa") or 0) + (r.get("season_rbi_pa") or 0)
+    rh = r.get("recent_h_pa")
+    if rh is not None and (r.get("recent_pa") or 0) > 0 and s_hrr > 0:
+        r_hrr = rh + (r.get("recent_r_pa") or 0) + (r.get("recent_rbi_pa") or 0)
+        delta = (r_hrr - s_hrr) / s_hrr
+        if delta > 0.12:
+            notes.append(f"hot 15-day form (+{delta*100:.0f}% vs season on {r.get('recent_pa')} PA)")
+        elif delta < -0.12:
+            notes.append(f"cold 15-day form ({delta*100:.0f}% vs season on {r.get('recent_pa')} PA)")
+
+    # Lineup spot — only flag the extremes
+    pos = r.get("lineup_pos")
+    epa = r.get("expected_pa", 0)
+    if pos:
+        if pos <= 3:
+            notes.append(f"top-3 lineup slot (~{epa:.1f} PA)")
+        elif pos >= 7:
+            notes.append(f"bottom-of-order ({epa:.1f} PA limits ceiling)")
+    else:
+        notes.append("lineup not yet confirmed")
+
+    # Build sentence 1: the matchup story
+    if boosters and drags:
+        s1 = (f"{name} ({team}) faces {opp}: "
+              + " and ".join(boosters[:2])
+              + ", offset by " + " and ".join(drags[:2]) + ".")
+    elif boosters:
+        s1 = (f"{name} ({team}) faces {opp}: "
+              + " and ".join(boosters[:3]) + ".")
+    elif drags:
+        s1 = (f"{name} ({team}) faces {opp}: " + " and ".join(drags[:3])
+              + " — the edge comes from baseline rates and lineup spot.")
+    else:
+        s1 = (f"{name} ({team}) faces {opp}: no individual factor stands out at &gt;5%, "
+              "so the edge comes from solid baseline rates plus a favorable PA count.")
+
+    # Build sentence 2: numbers + context
+    note_text = (" (" + "; ".join(notes) + ")") if notes else ""
+    s2 = (f"Projects to {e_hrr:.2f} expected H+R+RBI with P(over {line}) = {p_over*100:.1f}%, "
+          f"leaving a {edge:+.1f}% edge vs the &minus;110 break-even{note_text}.")
+
+    return s1 + " " + s2
+
 def build_email_html(date, rows, stats, track_record_html=""):
     today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
     rows_html = []
@@ -641,6 +950,14 @@ def build_email_html(date, rows, stats, track_record_html=""):
         if r.get("bvp_pa", 0) > 0:
             bvp_color = "#166534" if r.get("bvp_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvp_mult", 1.0) < 0.98 else "#6b7280"
             bvp_str = f"{r['bvp_mult']:.2f} ({r['bvp_pa']}PA)"
+        bvt_str = "&mdash;"; bvt_color = "#9ca3af"
+        if r.get("bvt_pa", 0) > 0:
+            bvt_color = "#166534" if r.get("bvt_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvt_mult", 1.0) < 0.98 else "#6b7280"
+            bvt_str = f"{r['bvt_mult']:.2f} ({r['bvt_pa']}PA)"
+        bvs_str = "&mdash;"; bvs_color = "#9ca3af"
+        if r.get("bvs_pa", 0) > 0:
+            bvs_color = "#166534" if r.get("bvs_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvs_mult", 1.0) < 0.98 else "#6b7280"
+            bvs_str = f"{r['bvs_mult']:.2f} ({r['bvs_pa']}PA)"
         wx_str = r.get("weather_label") or "&mdash;"
         rows_html.append(
             f"<tr style='border-bottom:1px solid #f3f4f6'>"
@@ -658,6 +975,8 @@ def build_email_html(date, rows, stats, track_record_html=""):
             f"<td style='padding:8px 10px;font-size:11px'>{r.get('weather_mult', 1.0):.2f}<br/><span style='color:#9ca3af;font-size:10px'>{wx_str}</span></td>"
             f"<td style='padding:8px 10px'>{r.get('bullpen_mult', 1.0):.2f}</td>"
             f"<td style='padding:8px 10px;font-size:11px;color:{bvp_color}'>{bvp_str}</td>"
+            f"<td style='padding:8px 10px;font-size:11px;color:{bvt_color}'>{bvt_str}</td>"
+            f"<td style='padding:8px 10px;font-size:11px;color:{bvs_color}'>{bvs_str}</td>"
             f"<td style='padding:8px 10px'>{round(r['impact']*100)}%</td>"
             f"</tr>"
         )
@@ -667,6 +986,7 @@ def build_email_html(date, rows, stats, track_record_html=""):
         f"<h1 style='font-size:20px;margin:0 0 4px'>MLB Prop Edge — Top 10 H+R+RBI</h1>"
         f"<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>{today_str} &middot; {stats['games']} games &middot; ranked by best edge vs -110 break-even (52.4%)</div>"
         f"{track_record_html}"
+        f"{_build_top5_commentary_block(rows)}"
         f"<table style='width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px'>"
         f"<thead style='background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left'>"
         f"<tr>"
@@ -684,6 +1004,8 @@ def build_email_html(date, rows, stats, track_record_html=""):
         f"<th style='padding:8px 10px'>Wx&times;</th>"
         f"<th style='padding:8px 10px'>BP&times;</th>"
         f"<th style='padding:8px 10px'>BvP&times;</th>"
+        f"<th style='padding:8px 10px'>BvT&times;</th>"
+        f"<th style='padding:8px 10px'>BvS&times;</th>"
         f"<th style='padding:8px 10px'>Cov</th>"
         f"</tr></thead>"
         f"<tbody>{''.join(rows_html)}</tbody>"
@@ -705,6 +1027,8 @@ def build_email_html(date, rows, stats, track_record_html=""):
         f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Weather</td><td style='padding:3px 0'>0.92&ndash;1.08 &nbsp; <span style='color:#9ca3af'>(temp&plusmn;wind-direction&plusmn;precip; dome=1.00; retractable half-weighted)</span></td></tr>"
         f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Bullpen quality (opp relievers)</td><td style='padding:3px 0'>0.95&ndash;1.05 net &nbsp; <span style='color:#9ca3af'>(raw 0.85&ndash;1.15 applied to ~35% of PA)</span></td></tr>"
         f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvP (batter vs pitcher career)</td><td style='padding:3px 0'>0.85&ndash;1.20 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+30); typically tiny impact &lt;5 PA)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvT (batter vs team career)</td><td style='padding:3px 0'>0.90&ndash;1.15 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+100); divisional rivals can hit 300+ PA)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvS (batter at venue career)</td><td style='padding:3px 0'>0.92&ndash;1.08 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+150); from last 2 seasons of game logs)</span></td></tr>"
         f"</table>"
         f"<div style='margin-top:14px;color:#6b7280'>Status: <span style='color:#166534'>&#9989; in</span> = confirmed in lineup, <em>bench</em> = active roster but not in posted lineup, <span style='color:#92400e'>&#9711; TBD</span> = lineup not yet released. Coverage = share of the pitcher&rsquo;s mix where the batter has real Savant data.</div>"
         f"</div>"
@@ -770,6 +1094,14 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         if r.get("bvp_pa", 0) > 0:
             bvp_color = "#166534" if r.get("bvp_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvp_mult", 1.0) < 0.98 else "#6b7280"
             bvp_str = f"{r['bvp_mult']:.2f} ({r['bvp_pa']}PA)"
+        bvt_str = "&mdash;"; bvt_color = "#9ca3af"
+        if r.get("bvt_pa", 0) > 0:
+            bvt_color = "#166534" if r.get("bvt_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvt_mult", 1.0) < 0.98 else "#6b7280"
+            bvt_str = f"{r['bvt_mult']:.2f} ({r['bvt_pa']}PA)"
+        bvs_str = "&mdash;"; bvs_color = "#9ca3af"
+        if r.get("bvs_pa", 0) > 0:
+            bvs_color = "#166534" if r.get("bvs_mult", 1.0) > 1.02 else "#991b1b" if r.get("bvs_mult", 1.0) < 0.98 else "#6b7280"
+            bvs_str = f"{r['bvs_mult']:.2f} ({r['bvs_pa']}PA)"
         wx_str = r.get("weather_label") or "&mdash;"
         bid_attr = f" data-bid='{r.get('_bid','')}'" if r.get("_bid") else ""
         rows_html.append(
@@ -789,6 +1121,8 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
             f"<td style='padding:8px 10px;font-size:11px'>{r.get('weather_mult', 1.0):.2f}<br/><span style='color:#9ca3af;font-size:10px'>{wx_str}</span></td>"
             f"<td style='padding:8px 10px'>{r.get('bullpen_mult', 1.0):.2f}</td>"
             f"<td style='padding:8px 10px;font-size:11px;color:{bvp_color}'>{bvp_str}</td>"
+            f"<td style='padding:8px 10px;font-size:11px;color:{bvt_color}'>{bvt_str}</td>"
+            f"<td style='padding:8px 10px;font-size:11px;color:{bvs_color}'>{bvs_str}</td>"
             f"<td style='padding:8px 10px'>{round(r['impact']*100)}%</td>"
             f"</tr>"
         )
@@ -822,6 +1156,8 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         f"<th style='padding:8px 10px'>Wx&times;</th>"
         f"<th style='padding:8px 10px'>BP&times;</th>"
         f"<th style='padding:8px 10px'>BvP&times;</th>"
+        f"<th style='padding:8px 10px'>BvT&times;</th>"
+        f"<th style='padding:8px 10px'>BvS&times;</th>"
         f"<th style='padding:8px 10px'>Cov</th>"
         f"</tr></thead>"
         f"<tbody>{''.join(rows_html)}</tbody>"
@@ -844,6 +1180,8 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Weather</td><td style='padding:3px 0'>0.92&ndash;1.08 &nbsp; <span style='color:#9ca3af'>(temp&plusmn;wind-direction&plusmn;precip; dome=1.00; retractable half-weighted)</span></td></tr>"
         f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>Bullpen quality (opp relievers)</td><td style='padding:3px 0'>0.95&ndash;1.05 net &nbsp; <span style='color:#9ca3af'>(raw 0.85&ndash;1.15 applied to ~35% of PA)</span></td></tr>"
         f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvP (batter vs pitcher career)</td><td style='padding:3px 0'>0.85&ndash;1.20 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+30); typically tiny impact &lt;5 PA)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvT (batter vs team career)</td><td style='padding:3px 0'>0.90&ndash;1.15 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+100); divisional rivals can hit 300+ PA)</span></td></tr>"
+        f"<tr><td style='padding:3px 14px 3px 0;color:#6b7280'>BvS (batter at venue career)</td><td style='padding:3px 0'>0.92&ndash;1.08 &nbsp; <span style='color:#9ca3af'>(regressed PA / (PA+150); from last 2 seasons of game logs)</span></td></tr>"
         f"</table>"
         f"<div style='margin-top:14px;color:#6b7280'>Status: <span style='color:#166534'>&#9989; in</span> = confirmed in lineup, <em>bench</em> = active roster but not in posted lineup, <span style='color:#92400e'>&#9711; TBD</span> = lineup not yet released. Coverage = share of the pitcher&rsquo;s mix where the batter has real Savant data.</div>"
         f"</div>"
@@ -1222,6 +1560,7 @@ def main():
         a_tid = a["team"]["id"]; h_tid = h["team"]["id"]
         a_abbr = TEAM_ABBR.get(a["team"]["name"], a["team"]["name"][:3].upper())
         h_abbr = TEAM_ABBR.get(h["team"]["name"], h["team"]["name"][:3].upper())
+        venue_id = (g.get("venue") or {}).get("id")  # for BvS lookups in second pass
         a_pp = a.get("probablePitcher") or {}
         h_pp = h.get("probablePitcher") or {}
         ln = g.get("lineups") or {}
@@ -1240,7 +1579,7 @@ def main():
         a_bp_mult, a_bp_ratio = bullpen_factor(h_tid, bullpen_map, league_bp_woba)
         h_bp_mult, h_bp_ratio = bullpen_factor(a_tid, bullpen_map, league_bp_woba)
 
-        def score_side(roster, opp_pp, my_abbr, opp_abbr, lineup_ids, lineup_pos_map, game_label, my_team_id,
+        def score_side(roster, opp_pp, my_abbr, opp_abbr, lineup_ids, lineup_pos_map, game_label, my_team_id, opp_team_id,
                        bp_mult, bp_ratio):
             if not opp_pp.get("id"): return
             pid = str(opp_pp["id"])
@@ -1248,7 +1587,7 @@ def main():
             for pl in roster:
                 bid = pl["id"]
                 pos = lineup_pos_map.get(bid)  # None if not in lineup yet
-                # First pass: no BvP yet (added in second pass for top candidates).
+                # First pass: no BvP/BvT/BvS yet (added in second pass for top candidates).
                 r = project_hrr(bid, pid, pos, batters, pitchers, lg_mix, lg_xw, hand, p_hand_map,
                                 season, team_rpg, league_rpg, my_team_id, recent,
                                 park_mult=pk_mult, weather_mult=wx_mult, weather_label=wx_label,
@@ -1257,44 +1596,61 @@ def main():
                 in_lineup = None if not lineup_ids else (bid in lineup_ids)
                 rows.append({
                     "name": pl["name"], "team": my_abbr, "opp": opp_pp.get("fullName", "?"),
+                    "opp_team": opp_abbr,
                     "game": game_label, "in_lineup": in_lineup,
-                    "_pid": pid, "_bid": bid, "_lineup_pos": pos, "_my_team_id": my_team_id,
+                    "_pid": pid, "_bid": bid, "_lineup_pos": pos,
+                    "_my_team_id": my_team_id, "_opp_team_id": opp_team_id, "_venue_id": venue_id,
                     "park_label": h_abbr,
                     **r,
                 })
 
-        score_side(rosters.get(a_tid, []), h_pp, a_abbr, h_abbr, a_lineup_ids, a_lineup_pos, f"{a_abbr} @ {h_abbr}", a_tid,
+        score_side(rosters.get(a_tid, []), h_pp, a_abbr, h_abbr, a_lineup_ids, a_lineup_pos, f"{a_abbr} @ {h_abbr}", a_tid, h_tid,
                    a_bp_mult, a_bp_ratio)
-        score_side(rosters.get(h_tid, []), a_pp, h_abbr, a_abbr, h_lineup_ids, h_lineup_pos, f"{a_abbr} @ {h_abbr}", h_tid,
+        score_side(rosters.get(h_tid, []), a_pp, h_abbr, a_abbr, h_lineup_ids, h_lineup_pos, f"{a_abbr} @ {h_abbr}", h_tid, a_tid,
                    h_bp_mult, h_bp_ratio)
 
     # First-pass qualified pool
     qualified = [r for r in rows if r["impact"] >= 0.5 and r["season_pa"] >= 30]
     qualified.sort(key=lambda x: -x["best_edge"])
 
-    # Second pass: fetch BvP for the top 60 candidates and re-score with that factor applied.
+    # Second pass: fetch BvP, BvT, and BvS for the top 60 candidates and re-score.
+    # Each candidate now triggers up to 4 batter-detail API calls (BvP + BvT + BvS×2 seasons).
     BVP_LOOKUP_LIMIT = 60
+    BVS_SEASONS = [SEASON, SEASON - 1]   # last 2 seasons of gameLog for venue stats
     candidates = qualified[:BVP_LOOKUP_LIMIT]
-    print(f"  fetching BvP history for top {len(candidates)} candidates...", flush=True)
+    print(f"  fetching BvP/BvT/BvS history for top {len(candidates)} candidates...", flush=True)
     rescored = []
     for r in candidates:
         bid = r["_bid"]; pid = r["_pid"]
-        bvp = get_bvp(bid, pid)
+        opp_tid = r.get("_opp_team_id")
+        vid = r.get("_venue_id")
         season_woba = (season.get(bid) or {}).get("wOBA", 0.310)
+
+        bvp = get_bvp(bid, pid)
         bvp_m, bvp_pa, bvp_w = bvp_factor(bvp, season_woba)
-        # Recompute with BvP factored in (other factors stay the same)
+
+        bvt = get_bvt(bid, opp_tid) if opp_tid else None
+        bvt_m, bvt_pa, bvt_w = bvt_factor(bvt, season_woba)
+
+        bvs = get_bvs(bid, vid, BVS_SEASONS) if vid else None
+        bvs_m, bvs_pa, bvs_w = bvs_factor(bvs, season_woba)
+
+        # Recompute with all three career factors applied
         r2 = project_hrr(
             bid, pid, r["_lineup_pos"], batters, pitchers, lg_mix, lg_xw, hand, p_hand_map,
             season, team_rpg, league_rpg, r["_my_team_id"], recent,
             park_mult=r["park_mult"], weather_mult=r["weather_mult"], weather_label=r["weather_label"],
             bullpen_mult=r["bullpen_mult"], bullpen_ratio=r["bullpen_ratio"],
             bvp_mult=bvp_m, bvp_pa=bvp_pa, bvp_woba=bvp_w,
+            bvt_mult=bvt_m, bvt_pa=bvt_pa, bvt_woba=bvt_w,
+            bvs_mult=bvs_m, bvs_pa=bvs_pa, bvs_woba=bvs_w,
         )
         if not r2: continue
         rescored.append({
-            "name": r["name"], "team": r["team"], "opp": r["opp"], "game": r["game"],
-            "in_lineup": r["in_lineup"], "park_label": r["park_label"],
-            "_pid": pid, "_bid": bid, "_lineup_pos": r["_lineup_pos"], "_my_team_id": r["_my_team_id"],
+            "name": r["name"], "team": r["team"], "opp": r["opp"], "opp_team": r.get("opp_team", ""),
+            "game": r["game"], "in_lineup": r["in_lineup"], "park_label": r["park_label"],
+            "_pid": pid, "_bid": bid, "_lineup_pos": r["_lineup_pos"],
+            "_my_team_id": r["_my_team_id"], "_opp_team_id": opp_tid, "_venue_id": vid,
             **r2,
         })
 

@@ -1,6 +1,6 @@
 {
   "date": "2026-05-25",
-  "generated_at_utc": "2026-05-25 19:10 UTC",
+  "generated_at_utc": "2026-05-25 19:18 UTC",
   "picks": [
     {
       "rank": 1,
@@ -12,10 +12,10 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.3079849296976792,
-      "p_over_15": 0.8319849296976792,
-      "p_over_25": 0.6252137240570113,
-      "e_hrr": 3.224634300355684
+      "best_edge": 0.3167702378707763,
+      "p_over_15": 0.8407702378707763,
+      "p_over_25": 0.6395313186666112,
+      "e_hrr": 3.2948157249637693
     },
     {
       "rank": 2,
@@ -42,13 +42,43 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.27040857072841906,
-      "p_over_15": 0.7944085707284191,
-      "p_over_25": 0.5672140159780613,
-      "e_hrr": 2.957469150146681
+      "best_edge": 0.28008951816476135,
+      "p_over_15": 0.8040895181647614,
+      "p_over_25": 0.5816842384324438,
+      "e_hrr": 3.0218359523508465
     },
     {
       "rank": 4,
+      "batter_id": "650490",
+      "name": "Yandy D\u00edaz",
+      "team": "TB",
+      "opp_pitcher": "Kyle Bradish",
+      "game": "TB @ BAL",
+      "in_lineup": true,
+      "lineup_pos": 4,
+      "line": "1.5",
+      "best_edge": 0.27850001773626365,
+      "p_over_15": 0.8025000177362637,
+      "p_over_25": 0.5792869143556625,
+      "e_hrr": 3.0110764248709616
+    },
+    {
+      "rank": 5,
+      "batter_id": "660271",
+      "name": "Shohei Ohtani",
+      "team": "LAD",
+      "opp_pitcher": "Tanner Gordon",
+      "game": "COL @ LAD",
+      "in_lineup": null,
+      "lineup_pos": null,
+      "line": "1.5",
+      "best_edge": 0.27214863201644857,
+      "p_over_15": 0.7961486320164486,
+      "p_over_25": 0.569792043890244,
+      "e_hrr": 2.968837325761606
+    },
+    {
+      "rank": 6,
       "batter_id": "671056",
       "name": "Iv\u00e1n Herrera",
       "team": "STL",
@@ -61,36 +91,6 @@
       "p_over_15": 0.7939988226291255,
       "p_over_25": 0.566608380326874,
       "e_hrr": 2.9548045852772233
-    },
-    {
-      "rank": 5,
-      "batter_id": "660271",
-      "name": "Shohei Ohtani",
-      "team": "LAD",
-      "opp_pitcher": "Tanner Gordon",
-      "game": "COL @ LAD",
-      "in_lineup": null,
-      "lineup_pos": null,
-      "line": "1.5",
-      "best_edge": 0.26230128950657505,
-      "p_over_15": 0.7863012895065751,
-      "p_over_25": 0.5553312283410061,
-      "e_hrr": 2.9055994240565264
-    },
-    {
-      "rank": 6,
-      "batter_id": "650490",
-      "name": "Yandy D\u00edaz",
-      "team": "TB",
-      "opp_pitcher": "Kyle Bradish",
-      "game": "TB @ BAL",
-      "in_lineup": true,
-      "lineup_pos": 4,
-      "line": "1.5",
-      "best_edge": 0.2566752318775083,
-      "p_over_15": 0.7806752318775083,
-      "p_over_25": 0.5472070869115059,
-      "e_hrr": 2.870615131256483
     },
     {
       "rank": 7,
@@ -109,6 +109,36 @@
     },
     {
       "rank": 8,
+      "batter_id": "666018",
+      "name": "Jonathan Aranda",
+      "team": "TB",
+      "opp_pitcher": "Kyle Bradish",
+      "game": "TB @ BAL",
+      "in_lineup": true,
+      "lineup_pos": 3,
+      "line": "1.5",
+      "best_edge": 0.23856161120866304,
+      "p_over_15": 0.7625616112086631,
+      "p_over_25": 0.5217010302982268,
+      "e_hrr": 2.7630866404167405
+    },
+    {
+      "rank": 9,
+      "batter_id": "691406",
+      "name": "Junior Caminero",
+      "team": "TB",
+      "opp_pitcher": "Kyle Bradish",
+      "game": "TB @ BAL",
+      "in_lineup": true,
+      "lineup_pos": 2,
+      "line": "1.5",
+      "best_edge": 0.23668565245689432,
+      "p_over_15": 0.7606856524568943,
+      "p_over_25": 0.5191143469548085,
+      "e_hrr": 2.7523631423691723
+    },
+    {
+      "rank": 10,
       "batter_id": "671277",
       "name": "Luis Garc\u00eda Jr.",
       "team": "WSH",
@@ -123,22 +153,7 @@
       "e_hrr": 2.7311057807946257
     },
     {
-      "rank": 9,
-      "batter_id": "691406",
-      "name": "Junior Caminero",
-      "team": "TB",
-      "opp_pitcher": "Kyle Bradish",
-      "game": "TB @ BAL",
-      "in_lineup": true,
-      "lineup_pos": 2,
-      "line": "1.5",
-      "best_edge": 0.22764131566291024,
-      "p_over_15": 0.7516413156629103,
-      "p_over_25": 0.5067829466680064,
-      "e_hrr": 2.701663613871822
-    },
-    {
-      "rank": 10,
+      "rank": 11,
       "batter_id": "666182",
       "name": "Bo Bichette",
       "team": "NYM",
@@ -153,7 +168,7 @@
       "e_hrr": 2.6836908656168568
     },
     {
-      "rank": 11,
+      "rank": 12,
       "batter_id": "641343",
       "name": "Jake Bauers",
       "team": "MIL",
@@ -168,7 +183,7 @@
       "e_hrr": 2.6797089414010182
     },
     {
-      "rank": 12,
+      "rank": 13,
       "batter_id": "665742",
       "name": "Juan Soto",
       "team": "NYM",
@@ -183,7 +198,7 @@
       "e_hrr": 2.6716175951342733
     },
     {
-      "rank": 13,
+      "rank": 14,
       "batter_id": "700250",
       "name": "Ben Rice",
       "team": "NYY",
@@ -198,21 +213,6 @@
       "e_hrr": 2.620447021993699
     },
     {
-      "rank": 14,
-      "batter_id": "701762",
-      "name": "Nick Kurtz",
-      "team": "ATH",
-      "opp_pitcher": "Luis Castillo",
-      "game": "SEA @ ATH",
-      "in_lineup": null,
-      "lineup_pos": null,
-      "line": "1.5",
-      "best_edge": 0.19804407117994427,
-      "p_over_15": 0.7220440711799443,
-      "p_over_25": 0.4679711367861339,
-      "e_hrr": 2.5461572635003744
-    },
-    {
       "rank": 15,
       "batter_id": "687859",
       "name": "Troy Johnston",
@@ -222,10 +222,10 @@
       "in_lineup": null,
       "lineup_pos": null,
       "line": "1.5",
-      "best_edge": 0.18875619061515558,
-      "p_over_15": 0.7127561906151556,
-      "p_over_25": 0.4562539948765517,
-      "e_hrr": 2.500261631302554
+      "best_edge": 0.19974013109476385,
+      "p_over_15": 0.7237401310947639,
+      "p_over_25": 0.47013396409594366,
+      "e_hrr": 2.554677700485467
     }
   ]
 }

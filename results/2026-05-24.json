@@ -1,6 +1,6 @@
 {
   "date": "2026-05-24",
-  "graded_at_utc": "2026-05-25 13:37 UTC",
+  "graded_at_utc": "2026-05-25 16:26 UTC",
   "results": [
     {
       "rank": 1,
@@ -18,13 +18,13 @@
       "e_hrr": 3.339020487544546,
       "matched": true,
       "played": false,
+      "started": false,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 2,
@@ -42,13 +42,13 @@
       "e_hrr": 3.1982020048849003,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 1,
       "runs": 0,
       "rbi": 0,
       "hrr": 1,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 3,
@@ -66,13 +66,13 @@
       "e_hrr": 3.006705747476901,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 4,
@@ -90,13 +90,13 @@
       "e_hrr": 2.9951607062805663,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 3,
       "runs": 3,
       "rbi": 3,
       "hrr": 9,
       "over_15": true,
-      "over_25": true,
-      "win_at_line": true
+      "over_25": true
     },
     {
       "rank": 5,
@@ -114,13 +114,13 @@
       "e_hrr": 2.910474081811324,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 1,
       "runs": 0,
       "rbi": 0,
       "hrr": 1,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 6,
@@ -138,13 +138,13 @@
       "e_hrr": 2.8667381593314585,
       "matched": true,
       "played": false,
+      "started": false,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 7,
@@ -162,13 +162,13 @@
       "e_hrr": 2.8314845473834582,
       "matched": true,
       "played": false,
+      "started": false,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 8,
@@ -186,13 +186,13 @@
       "e_hrr": 2.8307892525152836,
       "matched": true,
       "played": false,
+      "started": false,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 9,
@@ -210,13 +210,13 @@
       "e_hrr": 2.7702317420384417,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 1,
       "runs": 1,
       "rbi": 1,
       "hrr": 3,
       "over_15": true,
-      "over_25": true,
-      "win_at_line": true
+      "over_25": true
     },
     {
       "rank": 10,
@@ -234,13 +234,13 @@
       "e_hrr": 2.6934466918855566,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 11,
@@ -258,13 +258,13 @@
       "e_hrr": 2.6507019514405465,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 2,
       "runs": 0,
       "rbi": 0,
       "hrr": 2,
       "over_15": true,
-      "over_25": false,
-      "win_at_line": true
+      "over_25": false
     },
     {
       "rank": 12,
@@ -282,13 +282,13 @@
       "e_hrr": 2.641767970102851,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 1,
       "runs": 1,
       "rbi": 2,
       "hrr": 4,
       "over_15": true,
-      "over_25": true,
-      "win_at_line": true
+      "over_25": true
     },
     {
       "rank": 13,
@@ -306,13 +306,13 @@
       "e_hrr": 2.6415533816209034,
       "matched": true,
       "played": false,
+      "started": false,
       "hits": 0,
       "runs": 0,
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 14,
@@ -330,13 +330,13 @@
       "e_hrr": 2.641127796872928,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 0,
       "runs": 1,
       "rbi": 0,
       "hrr": 1,
       "over_15": false,
-      "over_25": false,
-      "win_at_line": false
+      "over_25": false
     },
     {
       "rank": 15,
@@ -354,31 +354,28 @@
       "e_hrr": 2.633490341425225,
       "matched": true,
       "played": true,
+      "started": true,
       "hits": 1,
       "runs": 1,
       "rbi": 0,
       "hrr": 2,
       "over_15": true,
-      "over_25": false,
-      "win_at_line": true
+      "over_25": false
     }
   ],
   "summary": {
     "graded": 15,
     "matched": 15,
     "played": 10,
+    "started": 10,
     "over_15": 5,
     "over_25": 3,
-    "wins_at_line": 5,
     "ev_o15_sum": 7.693876244105214,
     "ev_o25_sum": 5.326420423667887,
-    "ev_line_sum": 7.693876244105214,
     "over_15_rate": 0.5,
     "over_25_rate": 0.3,
-    "wins_at_line_rate": 0.5,
     "expected_over_15_rate": 0.7693876244105213,
     "expected_over_25_rate": 0.5326420423667887,
-    "expected_wins_at_line_rate": 0.7693876244105213,
-    "roi_at_line_pct": -0.045499999999999985
+    "roi_o15_pct": -0.045499999999999985
   }
 }

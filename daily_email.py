@@ -1659,9 +1659,23 @@ def main():
         score_side(rosters.get(h_tid, []), a_pp, h_abbr, a_abbr, h_lineup_ids, h_lineup_pos, f"{a_abbr} @ {h_abbr}", h_tid, a_tid,
                    h_bp_mult, h_bp_ratio)
 
-    # First-pass qualified pool
-    qualified = [r for r in rows if r["impact"] >= 0.5 and r["season_pa"] >= 30]
+    # First-pass qualified pool. Filters:
+    #   * Savant pitch-arsenal coverage >= 50% of the opposing pitcher's mix
+    #   * Season PA >= 30 (filters out players with too little data to project)
+    #   * Recent 15-day PA >= 15 (filters out injured / called-up / barely-playing
+    #     players — without this, the model can recommend players who haven't
+    #     touched a bat in two weeks)
+    MIN_RECENT_PA = 15
+    pre_recent = sum(1 for r in rows if r["impact"] >= 0.5 and r["season_pa"] >= 30)
+    qualified = [r for r in rows
+                 if r["impact"] >= 0.5
+                 and r["season_pa"] >= 30
+                 and (r.get("recent_pa") or 0) >= MIN_RECENT_PA]
     qualified.sort(key=lambda x: -x["best_edge"])
+    dropped = pre_recent - len(qualified)
+    if dropped:
+        print(f"  recent-PA filter (>= {MIN_RECENT_PA} in last 15d): dropped {dropped} "
+              f"players, {len(qualified)} remain", flush=True)
 
     # Second pass: fetch BvP, BvT, and BvS for the top 60 candidates and re-score.
     # Each candidate now triggers up to 4 batter-detail API calls (BvP + BvT + BvS×2 seasons).

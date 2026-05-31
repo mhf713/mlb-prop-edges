@@ -257,8 +257,10 @@ def get_bvs(batter_id, venue_id, seasons):
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 ODDS_SPORT = "baseball_mlb"
 ODDS_MARKET = "batter_hits_runs_rbis"    # combined H+R+RBI prop market key
-ODDS_PREFERRED_BOOK = "draftkings"        # primary book; fallbacks tried in order
-ODDS_FALLBACK_BOOKS = ["fanduel", "betmgm", "caesars", "pointsbetus"]
+# Books we consider when shopping for the best line. The Odds API returns every
+# book in this region in a single request, so adding books here costs ZERO extra
+# API quota — we just compare more lines per player.
+ODDS_BOOKS = ["draftkings", "fanduel", "betmgm", "caesars", "fanatics"]
 
 def get_odds_events(api_key, date_iso):
     """List today's MLB events from The Odds API. One request burns 1 from the
@@ -324,21 +326,22 @@ def american_to_decimal(price):
         return 1 + price / 100.0
     return 1 + 100.0 / -price
 
-def extract_player_lines_from_event(event_odds, preferred_book=ODDS_PREFERRED_BOOK,
-                                     fallback_books=ODDS_FALLBACK_BOOKS):
+def extract_player_lines_from_event(event_odds, books=ODDS_BOOKS):
     """From one event's odds response, return {normalized_name: [{line, over_price,
-    under_price, book}, ...]} — a list because books sometimes offer alternate lines.
+    under_price, book}, ...]} — a list with every (line, book) combination across
+    ALL the books we consider. pick_best_line_for_player then iterates this list
+    and returns whichever combination has the highest edge against our projection.
 
-    Picks preferred_book first; falls back through other books only for players the
-    preferred book doesn't price (so DK is dominant when possible).
+    Line shopping is FREE in API-quota terms because the single /events/{id}/odds
+    call already returns all books for the requested region; we're just choosing
+    to compare them instead of taking the first one.
     """
     out = {}
     if not event_odds:
         return out
     bookmakers = event_odds.get("bookmakers", []) or []
     bm_by_key = {b.get("key"): b for b in bookmakers}
-    book_priority = [preferred_book] + [b for b in fallback_books if b != preferred_book]
-    for book_key in book_priority:
+    for book_key in books:
         bm = bm_by_key.get(book_key)
         if not bm: continue
         for market in bm.get("markets", []):
@@ -347,9 +350,9 @@ def extract_player_lines_from_event(event_odds, preferred_book=ODDS_PREFERRED_BO
             # Build per-player {line -> {over, under}} from this book's outcomes
             per_player = {}
             for outcome in market.get("outcomes", []):
-                name = outcome.get("description") or outcome.get("name", "")
                 if outcome.get("name") not in ("Over", "Under"):
                     continue
+                name = outcome.get("description") or ""
                 key = _normalize_name(name)
                 if not key: continue
                 pt = outcome.get("point")
@@ -362,10 +365,10 @@ def extract_player_lines_from_event(event_odds, preferred_book=ODDS_PREFERRED_BO
                     pp["over_price"] = outcome.get("price")
                 else:
                     pp["under_price"] = outcome.get("price")
-            # Only add players NOT already populated by an earlier (preferred) book
+            # Append every (line, book) tuple — pick_best_line_for_player will
+            # decide which one is best across all of them.
             for key, lines in per_player.items():
-                if key not in out:
-                    out[key] = list(lines.values())
+                out.setdefault(key, []).extend(lines.values())
     return out
 
 def pick_best_line_for_player(player_lines, e_hrr):

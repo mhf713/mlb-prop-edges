@@ -250,6 +250,156 @@ def get_bvs(batter_id, venue_id, seasons):
             continue
     return agg if any_found else None
 
+# =============== THE ODDS API ===============
+# Real sportsbook lines + prices for H+R+RBI props. Replaces the previous
+# assumption that every line is 1.5 at -110 juice.
+
+ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+ODDS_SPORT = "baseball_mlb"
+ODDS_MARKET = "batter_hits_runs_rbis"    # combined H+R+RBI prop market key
+ODDS_PREFERRED_BOOK = "draftkings"        # primary book; fallbacks tried in order
+ODDS_FALLBACK_BOOKS = ["fanduel", "betmgm", "caesars", "pointsbetus"]
+
+def get_odds_events(api_key, date_iso):
+    """List today's MLB events from The Odds API. One request burns 1 from the
+    monthly quota and returns all events for the sport. We filter to date_iso."""
+    if not api_key:
+        return []
+    try:
+        d = json.loads(fetch(
+            f"{ODDS_API_BASE}/sports/{ODDS_SPORT}/events?apiKey={api_key}&dateFormat=iso",
+            timeout=20
+        ))
+        out = []
+        for e in d:
+            ct = (e.get("commence_time") or "")[:10]
+            if ct == date_iso:
+                out.append(e)
+        return out
+    except urllib.error.HTTPError as he:
+        body = ""
+        try: body = he.read().decode("utf-8", errors="replace")[:200]
+        except Exception: pass
+        print(f"  WARN: odds events HTTP {he.code}: {body}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  WARN: odds events fetch failed: {e}", file=sys.stderr)
+        return []
+
+def get_odds_for_event(api_key, event_id):
+    """Fetch H+R+RBI prop lines for one event across all US books. One call
+    returns all players' lines for that event. Burns 1 request from the quota
+    (or more if the plan multiplies by markets/regions — check headers)."""
+    if not api_key or not event_id:
+        return None
+    try:
+        return json.loads(fetch(
+            f"{ODDS_API_BASE}/sports/{ODDS_SPORT}/events/{event_id}/odds"
+            f"?apiKey={api_key}&regions=us&markets={ODDS_MARKET}&oddsFormat=american",
+            timeout=20
+        ))
+    except urllib.error.HTTPError as he:
+        body = ""
+        try: body = he.read().decode("utf-8", errors="replace")[:200]
+        except Exception: pass
+        print(f"  WARN: odds event {event_id} HTTP {he.code}: {body}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  WARN: odds event {event_id} fetch failed: {e}", file=sys.stderr)
+        return None
+
+def american_to_breakeven(price):
+    """Convert American odds (e.g. -120, +145) to implied break-even probability."""
+    if price is None:
+        return None
+    if price > 0:
+        return 100.0 / (100 + price)
+    return -price / (-price + 100.0)
+
+def american_to_decimal(price):
+    """Convert American odds to decimal odds (payout per $1 risked, including stake)."""
+    if price is None:
+        return None
+    if price > 0:
+        return 1 + price / 100.0
+    return 1 + 100.0 / -price
+
+def extract_player_lines_from_event(event_odds, preferred_book=ODDS_PREFERRED_BOOK,
+                                     fallback_books=ODDS_FALLBACK_BOOKS):
+    """From one event's odds response, return {normalized_name: [{line, over_price,
+    under_price, book}, ...]} — a list because books sometimes offer alternate lines.
+
+    Picks preferred_book first; falls back through other books only for players the
+    preferred book doesn't price (so DK is dominant when possible).
+    """
+    out = {}
+    if not event_odds:
+        return out
+    bookmakers = event_odds.get("bookmakers", []) or []
+    bm_by_key = {b.get("key"): b for b in bookmakers}
+    book_priority = [preferred_book] + [b for b in fallback_books if b != preferred_book]
+    for book_key in book_priority:
+        bm = bm_by_key.get(book_key)
+        if not bm: continue
+        for market in bm.get("markets", []):
+            if market.get("key") != ODDS_MARKET:
+                continue
+            # Build per-player {line -> {over, under}} from this book's outcomes
+            per_player = {}
+            for outcome in market.get("outcomes", []):
+                name = outcome.get("description") or outcome.get("name", "")
+                if outcome.get("name") not in ("Over", "Under"):
+                    continue
+                key = _normalize_name(name)
+                if not key: continue
+                pt = outcome.get("point")
+                if pt is None: continue
+                pp = per_player.setdefault(key, {}).setdefault(pt, {
+                    "line": pt, "over_price": None, "under_price": None,
+                    "book": bm.get("title", book_key),
+                })
+                if outcome.get("name") == "Over":
+                    pp["over_price"] = outcome.get("price")
+                else:
+                    pp["under_price"] = outcome.get("price")
+            # Only add players NOT already populated by an earlier (preferred) book
+            for key, lines in per_player.items():
+                if key not in out:
+                    out[key] = list(lines.values())
+    return out
+
+def pick_best_line_for_player(player_lines, e_hrr):
+    """Given the list of available (line, over_price, under_price) entries for a
+    player from a book, plus the model's E[HRR], return the line with the best
+    OVER edge (P(over) - break-even). Returns None if no usable line.
+
+    Bettors should bet whichever line has the largest positive edge. If a player
+    has alternates (e.g. O1.5 at -180 and O2.5 at +160), we pick the one where our
+    model's projection beats the book's implied probability by the most.
+    """
+    if not player_lines:
+        return None
+    best = None
+    for ln in player_lines:
+        op = ln.get("over_price")
+        if op is None:
+            continue
+        line_val = ln["line"]
+        # P(over line): for "over 1.5" we want P(HRR >= 2); generalize via ceil(line + epsilon)
+        k = int(math.ceil(line_val + 1e-9))
+        p_over = poisson_p_geq_k(e_hrr, k)
+        be = american_to_breakeven(op)
+        edge = p_over - be
+        scored = {
+            "line": line_val, "over_price": op,
+            "under_price": ln.get("under_price"),
+            "book": ln.get("book"),
+            "p_over": p_over, "breakeven": be, "edge": edge,
+        }
+        if best is None or edge > best["edge"]:
+            best = scored
+    return best
+
 def get_weather(lat, lon, date_iso):
     """Open-Meteo daily forecast (no auth). Returns hourly arrays for the date."""
     try:
@@ -776,6 +926,27 @@ def send_email(api_key, to_email, subject, html_body, text_body):
 def fmt_pct(p): return f"{p*100:.1f}%"
 def fmt_edge_pct(e): return f"{e*100:+.1f}%"
 
+def fmt_american_price(p):
+    """Format American odds as '+135' or '-120'."""
+    if p is None:
+        return ""
+    return f"{int(p):+d}"
+
+def fmt_book_cell(r):
+    """Render the 'Book' table cell: 'DK O1.5 -120' when real odds available,
+    '&mdash;' when not. Bookmaker short codes for compactness."""
+    if r.get("real_line") is None:
+        return "&mdash;"
+    book = (r.get("real_book") or "").upper()
+    short = {"DRAFTKINGS": "DK", "FANDUEL": "FD", "BETMGM": "MGM",
+             "CAESARS": "CSR", "POINTSBETUS": "PB"}.get(book, book[:3])
+    return f"{short} O{r['real_line']} {fmt_american_price(r['real_over_price'])}"
+
+def display_edge(r):
+    """When we have a real-edge value (Odds API matched), show that. Otherwise
+    fall back to the model's edge vs assumed -110."""
+    return r.get("real_edge") if r.get("real_edge") is not None else r.get("best_edge", 0.0)
+
 def _build_top5_commentary_block(rows):
     """Render the 'Why these picks?' section for the top 5 picks (or all rows if fewer)."""
     if not rows:
@@ -923,8 +1094,23 @@ def build_pick_commentary(r):
 
     # Build sentence 2: numbers + context
     note_text = (" (" + "; ".join(notes) + ")") if notes else ""
-    s2 = (f"Projects to {e_hrr:.2f} expected H+R+RBI with P(over {line}) = {p_over*100:.1f}%, "
-          f"leaving a {edge:+.1f}% edge vs the &minus;110 break-even{note_text}.")
+    # When a real sportsbook line is matched, frame the edge against the actual price.
+    real_line = r.get("real_line")
+    real_price = r.get("real_over_price")
+    real_p = r.get("real_p_over")
+    real_be = r.get("real_breakeven")
+    real_edge = r.get("real_edge")
+    real_book = (r.get("real_book") or "the book")
+    if real_line is not None and real_price is not None and real_edge is not None:
+        price_str = (f"+{int(real_price)}" if real_price > 0 else f"{int(real_price)}")
+        s2 = (f"Projects to {e_hrr:.2f} expected H+R+RBI; {real_book} has O{real_line} at "
+              f"{price_str} (implied {real_be*100:.1f}%) and our model gives "
+              f"P(over {real_line}) = {real_p*100:.1f}%, leaving a {real_edge*100:+.1f}% "
+              f"edge vs the book&rsquo;s actual price{note_text}.")
+    else:
+        s2 = (f"Projects to {e_hrr:.2f} expected H+R+RBI with P(over {line}) = {p_over*100:.1f}%, "
+              f"leaving a {edge:+.1f}% edge vs the &minus;110 break-even (no live book line "
+              f"matched){note_text}.")
 
     return s1 + " " + s2
 
@@ -933,7 +1119,8 @@ def build_email_html(date, rows, stats, track_record_html=""):
     rows_html = []
     for i, r in enumerate(rows, 1):
         status = ("&#9989; in" if r["in_lineup"] is True else "bench" if r["in_lineup"] is False else "&#9711; TBD")
-        edge_color = "#166534" if r["best_edge"] > 0.02 else "#991b1b" if r["best_edge"] < -0.02 else "#6b7280"
+        edge_val = display_edge(r)
+        edge_color = "#166534" if edge_val > 0.02 else "#991b1b" if edge_val < -0.02 else "#6b7280"
         hand_str = f" ({r['ph']}HP)" if r["ph"] else ""
         order_str = f"#{r['lineup_pos']}" if r["lineup_pos"] else "&mdash;"
         # Recent-form indicator (last-15-day vs season HRR rate)
@@ -961,11 +1148,12 @@ def build_email_html(date, rows, stats, track_record_html=""):
         wx_str = r.get("weather_label") or "&mdash;"
         rows_html.append(
             f"<tr style='border-bottom:1px solid #f3f4f6'>"
-            f"<td style='padding:8px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(r['best_edge'])}</td>"
+            f"<td style='padding:8px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(edge_val)}</td>"
             f"<td style='padding:8px 10px;font-size:11px'>{status}</td>"
             f"<td style='padding:8px 10px'><strong>{r['name']}</strong> <span style='color:#9ca3af;font-size:11px'>{r['team']}</span> <span style='color:#9ca3af;font-size:11px'>{order_str}</span></td>"
             f"<td style='padding:8px 10px'>vs {r['opp']}{hand_str} <span style='color:#9ca3af'>({r['game']})</span></td>"
             f"<td style='padding:8px 10px;font-weight:600'>O{r['best_line']}</td>"
+            f"<td style='padding:8px 10px;font-size:11px'>{fmt_book_cell(r)}</td>"
             f"<td style='padding:8px 10px'>{r['e_hrr']:.2f}</td>"
             f"<td style='padding:8px 10px;font-size:11px;color:{recent_color}'>{recent_str}</td>"
             f"<td style='padding:8px 10px'>{fmt_pct(r['p_over_15'])}</td>"
@@ -995,6 +1183,7 @@ def build_email_html(date, rows, stats, track_record_html=""):
         f"<th style='padding:8px 10px'>Batter (order)</th>"
         f"<th style='padding:8px 10px'>Matchup</th>"
         f"<th style='padding:8px 10px'>Line</th>"
+        f"<th style='padding:8px 10px'>Book</th>"
         f"<th style='padding:8px 10px'>E[HRR]</th>"
         f"<th style='padding:8px 10px'>Recent 15d</th>"
         f"<th style='padding:8px 10px'>P(O1.5)</th>"
@@ -1012,9 +1201,10 @@ def build_email_html(date, rows, stats, track_record_html=""):
         f"</table>"
         f"<div style='margin-top:18px;font-size:12px;color:#4b5563;line-height:1.55'>"
         f"<div style='font-weight:700;color:#111827;margin-bottom:6px'>How the projection is built</div>"
-        f"E[HRR] = expected_PA &times; (blended per-PA H/R/RBI rates) &times; Quality &times; Hand &times; Team &times; Park &times; Weather &times; Bullpen &times; BvP. "
+        f"E[HRR] = expected_PA &times; (blended per-PA H/R/RBI rates) &times; Quality &times; Hand &times; Team &times; Park &times; Weather &times; Bullpen &times; BvP &times; BvT &times; BvS. "
         f"P(O1.5) = P(HRR &ge; 2) and P(O2.5) = P(HRR &ge; 3) via Poisson with that expected value. "
-        f"Edge = best P(over) &minus; 52.4% (break-even at &minus;110 juice). "
+        f"Edge = P(over the BOOK&rsquo;s line) &minus; the book&rsquo;s implied break-even from its actual price (e.g. &minus;120 &rarr; 54.5%). "
+        f"If no book line was found, edge falls back to model line minus 52.4% break-even (&minus;110 assumption). "
         f"Per-PA rates are blended from full-season and last-15-day rates using shrinkage toward season (weight = recent_PA / (recent_PA + 100)). "
         f"<div style='font-weight:700;color:#111827;margin:14px 0 6px'>Weight of each piece (multiplier range, typical impact)</div>"
         f"<table style='border-collapse:collapse;font-size:12px'>"
@@ -1078,7 +1268,8 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
     rows_html = []
     for i, r in enumerate(rows, 1):
         status = ("&#9989; in" if r["in_lineup"] is True else "bench" if r["in_lineup"] is False else "&#9711; TBD")
-        edge_color = "#166534" if r["best_edge"] > 0.02 else "#991b1b" if r["best_edge"] < -0.02 else "#6b7280"
+        edge_val = display_edge(r)
+        edge_color = "#166534" if edge_val > 0.02 else "#991b1b" if edge_val < -0.02 else "#6b7280"
         hand_str = f" ({r['ph']}HP)" if r["ph"] else ""
         order_str = f"#{r['lineup_pos']}" if r["lineup_pos"] else "&mdash;"
         s_hrr = (r["season_h_pa"] or 0) + (r["season_r_pa"] or 0) + (r["season_rbi_pa"] or 0)
@@ -1107,11 +1298,12 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         rows_html.append(
             f"<tr style='border-bottom:1px solid #f3f4f6'{bid_attr}>"
             f"<td style='padding:8px 10px;color:#9ca3af;font-size:11px'>{i}</td>"
-            f"<td style='padding:8px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(r['best_edge'])}</td>"
+            f"<td style='padding:8px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(edge_val)}</td>"
             f"<td style='padding:8px 10px;font-size:11px'>{status}</td>"
             f"<td style='padding:8px 10px'><strong>{r['name']}</strong> <span style='color:#9ca3af;font-size:11px'>{r['team']}</span> <span style='color:#9ca3af;font-size:11px'>{order_str}</span></td>"
             f"<td style='padding:8px 10px'>vs {r['opp']}{hand_str} <span style='color:#9ca3af'>({r['game']})</span></td>"
             f"<td style='padding:8px 10px;font-weight:600'>O{r['best_line']}</td>"
+            f"<td style='padding:8px 10px;font-size:11px'>{fmt_book_cell(r)}</td>"
             f"<td style='padding:8px 10px'>{r['e_hrr']:.2f}</td>"
             f"<td style='padding:8px 10px;font-size:11px;color:{recent_color}'>{recent_str}</td>"
             f"<td style='padding:8px 10px'>{fmt_pct(r['p_over_15'])}</td>"
@@ -1147,6 +1339,7 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         f"<th style='padding:8px 10px'>Batter (order)</th>"
         f"<th style='padding:8px 10px'>Matchup</th>"
         f"<th style='padding:8px 10px'>Line</th>"
+        f"<th style='padding:8px 10px'>Book</th>"
         f"<th style='padding:8px 10px'>E[HRR]</th>"
         f"<th style='padding:8px 10px'>Recent 15d</th>"
         f"<th style='padding:8px 10px'>P(O1.5)</th>"
@@ -1282,13 +1475,14 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
     results_file = os.path.join(results_dir, f"{date_iso}.json")
     if not os.path.exists(picks_file):
         return None
-    # If a results file exists in the current (started-aware) schema, skip.
-    # Otherwise re-grade so older files migrate automatically.
+    # If a results file already exists in the current schema (has both 'started'
+    # and 'real_line_picks'), skip — otherwise re-grade so the schema migrates.
     if os.path.exists(results_file):
         try:
             with open(results_file) as f:
                 existing = json.load(f)
-            if "started" in (existing.get("summary", {}) or {}):
+            ex_sum = existing.get("summary", {}) or {}
+            if "started" in ex_sum and "real_line_picks" in ex_sum:
                 return None
             print(f"  {date_iso}: re-grading (old results schema)", flush=True)
         except Exception:
@@ -1306,7 +1500,11 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
 
     results = []
     sums = {"graded": 0, "matched": 0, "played": 0, "started": 0,
-            "over_15": 0, "over_25": 0, "ev_o15_sum": 0.0, "ev_o25_sum": 0.0}
+            "over_15": 0, "over_25": 0, "ev_o15_sum": 0.0, "ev_o25_sum": 0.0,
+            # Real-line accounting (only counts picks where a real_line was saved):
+            "real_line_picks": 0, "real_line_wins": 0,
+            "real_line_profit_units": 0.0,   # $-units returned on $1-per-pick stakes
+            "real_line_staked_units": 0.0}
     for p in picks_data.get("picks", []):
         team = p.get("team", "")
         nm = p.get("name", "")
@@ -1328,9 +1526,18 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
         started = bool(rec.get("started"))
         over_15 = started and hrr >= 2
         over_25 = started and hrr >= 3
+        # Real-line outcome (if the pick was saved with a real line). Bet is OVER
+        # the book's line; win if HRR strictly exceeds that line.
+        real_line = p.get("real_line")
+        real_price = p.get("real_over_price")
+        real_decimal = american_to_decimal(real_price) if real_price is not None else None
+        real_won = None
+        if started and real_line is not None:
+            real_won = hrr > real_line
         results.append({**p, "matched": True, "played": played, "started": started,
                         "hits": h, "runs": r_, "rbi": rbi, "hrr": hrr,
-                        "over_15": over_15, "over_25": over_25})
+                        "over_15": over_15, "over_25": over_25,
+                        "real_won": real_won})
         sums["matched"] += 1
         if played:
             sums["played"] += 1
@@ -1340,26 +1547,48 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
             if over_25: sums["over_25"] += 1
             sums["ev_o15_sum"] += float(p.get("p_over_15") or 0.0)
             sums["ev_o25_sum"] += float(p.get("p_over_25") or 0.0)
+            if real_line is not None and real_decimal is not None:
+                sums["real_line_picks"] += 1
+                sums["real_line_staked_units"] += 1.0
+                if real_won:
+                    sums["real_line_wins"] += 1
+                    sums["real_line_profit_units"] += (real_decimal - 1.0)
+                else:
+                    sums["real_line_profit_units"] -= 1.0
     st = max(1, sums["started"])
+    rl = max(1, sums["real_line_picks"])
     summary = {
         **sums,
+        # Model-line metrics (kept for backward compat with the assumed -110 view)
         "over_15_rate":          sums["over_15"]/st if sums["started"] else 0.0,
         "over_25_rate":          sums["over_25"]/st if sums["started"] else 0.0,
         "expected_over_15_rate": sums["ev_o15_sum"]/st if sums["started"] else 0.0,
         "expected_over_25_rate": sums["ev_o25_sum"]/st if sums["started"] else 0.0,
         "roi_o15_pct":           (sums["over_15"]/st * 1.909 - 1.0) if sums["started"] else 0.0,
+        # Real-line metrics — computed only over picks that had a confirmed sportsbook line
+        "real_line_win_rate":    sums["real_line_wins"]/rl if sums["real_line_picks"] else 0.0,
+        "real_line_roi_pct":     (sums["real_line_profit_units"]/sums["real_line_staked_units"])
+                                  if sums["real_line_staked_units"] else 0.0,
     }
     os.makedirs(results_dir, exist_ok=True)
     with open(results_file, "w") as f:
         json.dump({"date": date_iso,
                    "graded_at_utc": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
                    "results": results, "summary": summary}, f, indent=2)
-    print(f"  graded {date_iso}: {sums['over_15']}/{sums['started']} over 1.5 H+R+RBI among starters "
-          f"(expected {summary['expected_over_15_rate']*100:.1f}%, ROI {summary['roi_o15_pct']*100:+.1f}%)", flush=True)
+    msg = (f"  graded {date_iso}: {sums['over_15']}/{sums['started']} over 1.5 (starters) "
+           f"@ assumed -110 ROI {summary['roi_o15_pct']*100:+.1f}%")
+    if sums["real_line_picks"]:
+        msg += (f"  |  REAL-LINE: {sums['real_line_wins']}/{sums['real_line_picks']} wins, "
+                f"ROI {summary['real_line_roi_pct']*100:+.1f}% on actual prices")
+    print(msg, flush=True)
     return summary
 
 def save_picks(date_iso, top_picks, picks_dir="picks"):
-    """Write a JSON snapshot of today's top picks so we can grade them tomorrow."""
+    """Write a JSON snapshot of today's top picks so we can grade them tomorrow.
+
+    Includes the real sportsbook line/price/edge when available; tomorrow's grader
+    uses those to compute ROI against actual prices instead of assumed -110.
+    """
     os.makedirs(picks_dir, exist_ok=True)
     fname = os.path.join(picks_dir, f"{date_iso}.json")
     out = {
@@ -1370,11 +1599,19 @@ def save_picks(date_iso, top_picks, picks_dir="picks"):
              "name": r.get("name", ""), "team": r.get("team", ""),
              "opp_pitcher": r.get("opp", ""), "game": r.get("game", ""),
              "in_lineup": r.get("in_lineup"), "lineup_pos": r.get("lineup_pos"),
+             # Model side (assumed line / -110)
              "line": r.get("best_line", "1.5"),
              "best_edge": r.get("best_edge", 0.0),
              "p_over_15": r.get("p_over_15", 0.0),
              "p_over_25": r.get("p_over_25", 0.0),
-             "e_hrr": r.get("e_hrr", 0.0)}
+             "e_hrr": r.get("e_hrr", 0.0),
+             # Real-odds side (Odds API). Null when we couldn't get a real line.
+             "real_line":       r.get("real_line"),
+             "real_over_price": r.get("real_over_price"),
+             "real_book":       r.get("real_book"),
+             "real_p_over":     r.get("real_p_over"),
+             "real_breakeven":  r.get("real_breakeven"),
+             "real_edge":       r.get("real_edge")}
             for i, r in enumerate(top_picks)
         ],
     }
@@ -1402,8 +1639,9 @@ def migrate_old_results(picks_dir="picks", results_dir="results"):
                 existing = json.load(f)
         except Exception:
             continue
-        if "started" in (existing.get("summary", {}) or {}):
-            continue  # already current
+        ex_sum = existing.get("summary", {}) or {}
+        if "started" in ex_sum and "real_line_picks" in ex_sum:
+            continue  # already current schema
         print(f"  migrating stale result file {date_iso}", flush=True)
         try:
             summary = grade_picks_for_date(date_iso, picks_dir=picks_dir, results_dir=results_dir)
@@ -1447,6 +1685,8 @@ def aggregate_results(all_results, window_days=None, today_iso=None):
     days = len(all_results)
     graded = matched = played = started = o15 = o25 = 0
     ev_o15 = ev_o25 = 0.0
+    rl_picks = rl_wins = 0
+    rl_profit = rl_staked = 0.0
     for d in all_results:
         s = d.get("summary", {}) or {}
         graded  += int(s.get("graded", 0) or 0)
@@ -1457,7 +1697,13 @@ def aggregate_results(all_results, window_days=None, today_iso=None):
         o25     += int(s.get("over_25", 0) or 0)
         ev_o15  += float(s.get("ev_o15_sum", 0) or 0)
         ev_o25  += float(s.get("ev_o25_sum", 0) or 0)
+        rl_picks  += int(s.get("real_line_picks", 0) or 0)
+        rl_wins   += int(s.get("real_line_wins", 0) or 0)
+        rl_profit += float(s.get("real_line_profit_units", 0) or 0)
+        rl_staked += float(s.get("real_line_staked_units", 0) or 0)
     st = max(1, started)
+    rlp = max(1, rl_picks)
+    rls = max(1.0, rl_staked)
     return {"days": days, "graded": graded, "matched": matched,
             "played": played, "started": started,
             "over_15": o15, "over_25": o25,
@@ -1465,7 +1711,12 @@ def aggregate_results(all_results, window_days=None, today_iso=None):
             "over_25_rate":          o25/st if started else 0.0,
             "expected_over_15_rate": ev_o15/st if started else 0.0,
             "expected_over_25_rate": ev_o25/st if started else 0.0,
-            "roi_o15_pct":           (o15/st * 1.909 - 1.0) if started else 0.0}
+            "roi_o15_pct":           (o15/st * 1.909 - 1.0) if started else 0.0,
+            # Real-line aggregates
+            "real_line_picks":  rl_picks,
+            "real_line_wins":   rl_wins,
+            "real_line_win_rate": rl_wins/rlp if rl_picks else 0.0,
+            "real_line_roi_pct":  rl_profit/rls if rl_staked else 0.0}
 
 def build_track_record_html(today_iso, all_results):
     if not all_results:
@@ -1731,6 +1982,90 @@ def main():
         seen.add(key)
         deduped.append(r)
     rescored = deduped
+
+    # =============== REAL ODDS OVERLAY ===============
+    # Look up the actual sportsbook line + price for each top candidate via The Odds
+    # API. Re-rank by true edge (model P(over real line) - real break-even) instead
+    # of the model's assumed 1.5 / -110. Players we can't find a line for keep
+    # the model-edge ranking — they just sort below players with confirmed real edges
+    # of similar magnitude (small penalty to discourage betting blind).
+    odds_api_key = os.environ.get("ODDS_API_KEY", "").strip()
+    if odds_api_key:
+        try:
+            ODDS_OVERLAY_LIMIT = 30   # only enrich the top 30 — keeps API requests modest
+            top_for_odds = rescored[:ODDS_OVERLAY_LIMIT]
+            print(f"  fetching real lines for top {len(top_for_odds)} via The Odds API...", flush=True)
+
+            # 1. Pull today's MLB events list (1 request)
+            events = get_odds_events(odds_api_key, DATE)
+            # Build (away_normalized, home_normalized) -> event_id map for matching
+            event_id_by_pair = {}
+            for e in events:
+                a_norm = _normalize_name(e.get("away_team", ""))
+                h_norm = _normalize_name(e.get("home_team", ""))
+                if a_norm and h_norm:
+                    event_id_by_pair[(a_norm, h_norm)] = e.get("id")
+            print(f"    {len(events)} MLB events found on slate", flush=True)
+
+            # 2. Identify which events our top candidates actually need (most slates
+            #    cover 6-12 unique games among top 30 picks)
+            needed_event_ids = set()
+            for r in top_for_odds:
+                g = r.get("game", "")
+                # game label is "AWAY @ HOME" with team abbreviations like "NYY @ BOS"
+                if " @ " not in g: continue
+                # We need full team names to match The Odds API. Reverse-map abbr → full name.
+                a_abbr, h_abbr = g.split(" @ ", 1)
+                a_full = next((n for n, a in TEAM_ABBR.items() if a == a_abbr.strip()), None)
+                h_full = next((n for n, a in TEAM_ABBR.items() if a == h_abbr.strip()), None)
+                if not a_full or not h_full: continue
+                eid = event_id_by_pair.get((_normalize_name(a_full), _normalize_name(h_full)))
+                if eid:
+                    needed_event_ids.add(eid)
+                    r["_odds_event_id"] = eid
+
+            # 3. Fetch odds for each needed event (1 request per event)
+            print(f"    fetching odds for {len(needed_event_ids)} events", flush=True)
+            player_lines_by_event = {}
+            for eid in needed_event_ids:
+                evt = get_odds_for_event(odds_api_key, eid)
+                if evt:
+                    player_lines_by_event[eid] = extract_player_lines_from_event(evt)
+
+            # 4. For each top candidate, look up their lines and pick the best-edge one
+            matched = 0
+            for r in top_for_odds:
+                eid = r.get("_odds_event_id")
+                if not eid or eid not in player_lines_by_event:
+                    continue
+                key = _normalize_name(r.get("name", ""))
+                player_lines = player_lines_by_event[eid].get(key)
+                if not player_lines:
+                    continue
+                best = pick_best_line_for_player(player_lines, r["e_hrr"])
+                if not best:
+                    continue
+                matched += 1
+                r["real_line"]       = best["line"]
+                r["real_over_price"] = best["over_price"]
+                r["real_book"]       = best["book"]
+                r["real_p_over"]     = best["p_over"]
+                r["real_breakeven"]  = best["breakeven"]
+                r["real_edge"]       = best["edge"]
+            print(f"    matched real lines for {matched}/{len(top_for_odds)} candidates", flush=True)
+
+            # 5. Re-rank: players with real_edge sort by that; players without
+            #    keep their model edge but get a small penalty (subtract 1%) so a
+            #    similarly-edged confirmed line beats a blind-line pick.
+            def rank_key(r):
+                if "real_edge" in r:
+                    return -r["real_edge"]
+                return -(r["best_edge"] - 0.01)
+            rescored.sort(key=rank_key)
+        except Exception as e:
+            print(f"  WARN: Odds API integration failed, falling back to model edges: {e}", file=sys.stderr)
+    else:
+        print(f"  ODDS_API_KEY not set — using assumed lines (1.5 at -110 break-even)", flush=True)
 
     top = rescored[:10]
 

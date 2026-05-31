@@ -1,6 +1,6 @@
 {
   "date": "2026-05-23",
-  "graded_at_utc": "2026-05-25 19:17 UTC",
+  "graded_at_utc": "2026-05-31 14:39 UTC",
   "results": [
     {
       "rank": 1,
@@ -24,7 +24,8 @@
       "rbi": 0,
       "hrr": 3,
       "over_15": true,
-      "over_25": true
+      "over_25": true,
+      "real_won": null
     },
     {
       "rank": 2,
@@ -48,7 +49,8 @@
       "rbi": 1,
       "hrr": 5,
       "over_15": true,
-      "over_25": true
+      "over_25": true,
+      "real_won": null
     },
     {
       "rank": 3,
@@ -72,7 +74,8 @@
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 4,
@@ -96,7 +99,8 @@
       "rbi": 0,
       "hrr": 1,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 5,
@@ -120,7 +124,8 @@
       "rbi": 2,
       "hrr": 6,
       "over_15": true,
-      "over_25": true
+      "over_25": true,
+      "real_won": null
     },
     {
       "rank": 6,
@@ -144,7 +149,8 @@
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 7,
@@ -168,7 +174,8 @@
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 8,
@@ -192,7 +199,8 @@
       "rbi": 0,
       "hrr": 2,
       "over_15": true,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 9,
@@ -216,7 +224,8 @@
       "rbi": 1,
       "hrr": 4,
       "over_15": true,
-      "over_25": true
+      "over_25": true,
+      "real_won": null
     },
     {
       "rank": 10,
@@ -240,7 +249,8 @@
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 11,
@@ -264,7 +274,8 @@
       "rbi": 1,
       "hrr": 2,
       "over_15": true,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 12,
@@ -288,7 +299,8 @@
       "rbi": 0,
       "hrr": 1,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 13,
@@ -312,7 +324,8 @@
       "rbi": 0,
       "hrr": 1,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 14,
@@ -336,7 +349,8 @@
       "rbi": 0,
       "hrr": 0,
       "over_15": false,
-      "over_25": false
+      "over_25": false,
+      "real_won": null
     },
     {
       "rank": 15,
@@ -360,7 +374,8 @@
       "rbi": 3,
       "hrr": 6,
       "over_15": true,
-      "over_25": true
+      "over_25": true,
+      "real_won": null
     }
   ],
   "summary": {
@@ -372,10 +387,16 @@
     "over_25": 5,
     "ev_o15_sum": 10.970224162040456,
     "ev_o25_sum": 7.733527787168901,
+    "real_line_picks": 0,
+    "real_line_wins": 0,
+    "real_line_profit_units": 0.0,
+    "real_line_staked_units": 0.0,
     "over_15_rate": 0.5,
     "over_25_rate": 0.35714285714285715,
     "expected_over_15_rate": 0.7835874401457469,
     "expected_over_25_rate": 0.5523948419406358,
-    "roi_o15_pct": -0.045499999999999985
+    "roi_o15_pct": -0.045499999999999985,
+    "real_line_win_rate": 0.0,
+    "real_line_roi_pct": 0.0
   }
 }

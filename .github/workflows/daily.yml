@@ -5,7 +5,9 @@ on:
     # 12:00 UTC = 8:00 AM Eastern Daylight Time (EDT, summer)
     #            = 7:00 AM Eastern Standard Time (EST, winter)
     # MLB regular season runs ~April–Oct (EDT), so this gives you 8 AM ET on game days.
-    - cron: "0 6 * * *"
+    # By 8 AM ET, some morning/early-afternoon lineups have posted; the rest still
+    # show "TBD" but the Odds API gives us real lines for everyone with prop markets.
+    - cron: "0 12 * * *"
   workflow_dispatch:  # lets you trigger a run manually from the Actions tab
 
 permissions:
@@ -14,7 +16,7 @@ permissions:
 jobs:
   send-email:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -28,6 +30,7 @@ jobs:
         env:
           RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          ODDS_API_KEY:    ${{ secrets.ODDS_API_KEY }}
         run: python daily_email.py
 
       - name: Commit dashboard, picks, and results

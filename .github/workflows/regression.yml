@@ -1,0 +1,24 @@
+name: Regression Analysis
+
+# Manual trigger only. Run from the Actions tab to get a fresh inferential
+# read on which model factors are statistically significant vs. noise.
+# Reads results/*.json — no API calls, no commits.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  regress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run regression analysis
+        run: python regression_analysis.py

@@ -801,6 +801,42 @@ def matchup_xwoba(batters, pitchers, league_mix, league_xwoba, bid, pid):
     mn = m / used if used > 0 else m
     return {"matchup": mn, "baseline": base, "impact": impact}
 
+# =============== PLATT CALIBRATION ===============
+# After ~422 graded picks the model was found to be ~27 percentage points
+# overconfident on P(over 1.5) — predicted mean ~79% vs actual rate ~52%.
+# Platt scaling fits a one-time logistic transform that pulls each raw
+# prediction toward the observed hit rate at that level. Parameters are
+# fit by calibrate_predictions.py and stored in calibration_params.json;
+# this script just loads them and applies the transform.
+
+CALIBRATION_FILE = "calibration_params.json"
+
+def load_calibration():
+    """Return calibration_params.json contents, or None if not fitted yet."""
+    try:
+        with open(CALIBRATION_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+def _cal_sigmoid(x):
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+def _cal_logit(p):
+    EPS = 1e-9
+    p = max(EPS, min(1 - EPS, p))
+    return math.log(p / (1 - p))
+
+def apply_calibration(raw_p, params):
+    """Transform a raw model probability via the fitted Platt scaling."""
+    if params is None or raw_p is None:
+        return raw_p
+    return _cal_sigmoid(params["a"] + params["b"] * _cal_logit(raw_p))
+
 # =============== POISSON ===============
 
 def poisson_p_geq_k(lam, k):
@@ -1589,8 +1625,11 @@ def grade_picks_for_date(date_iso, picks_dir="picks", results_dir="results"):
 def save_picks(date_iso, top_picks, picks_dir="picks"):
     """Write a JSON snapshot of today's top picks so we can grade them tomorrow.
 
-    Includes the real sportsbook line/price/edge when available; tomorrow's grader
-    uses those to compute ROI against actual prices instead of assumed -110.
+    Includes:
+      - Model summary stats (p_over_15, p_over_25, e_hrr, best_edge)
+      - Every factor multiplier (hf, park, weather, bullpen, BvP, BvT, BvS, quality)
+        so factor_calibration.py can break performance down per factor
+      - Real-odds data (line, price, book, edge) when the Odds API matched
     """
     os.makedirs(picks_dir, exist_ok=True)
     fname = os.path.join(picks_dir, f"{date_iso}.json")
@@ -1600,15 +1639,36 @@ def save_picks(date_iso, top_picks, picks_dir="picks"):
         "picks": [
             {"rank": i+1, "batter_id": str(r.get("_bid") or ""),
              "name": r.get("name", ""), "team": r.get("team", ""),
-             "opp_pitcher": r.get("opp", ""), "game": r.get("game", ""),
+             "opp_pitcher": r.get("opp", ""), "opp_team": r.get("opp_team", ""),
+             "game": r.get("game", ""),
              "in_lineup": r.get("in_lineup"), "lineup_pos": r.get("lineup_pos"),
-             # Model side (assumed line / -110)
+             # Model side (assumed line / -110). p_over_*_raw are the Poisson
+             # outputs BEFORE Platt calibration; p_over_* are post-calibration.
+             # calibrate_predictions.py uses the _raw fields to refit so the
+             # transform doesn't compound on itself.
              "line": r.get("best_line", "1.5"),
              "best_edge": r.get("best_edge", 0.0),
              "p_over_15": r.get("p_over_15", 0.0),
              "p_over_25": r.get("p_over_25", 0.0),
+             "p_over_15_raw": r.get("p_over_15_raw"),
+             "p_over_25_raw": r.get("p_over_25_raw"),
              "e_hrr": r.get("e_hrr", 0.0),
-             # Real-odds side (Odds API). Null when we couldn't get a real line.
+             # Factor multipliers (so per-factor calibration can be done later)
+             "expected_pa":   r.get("expected_pa"),
+             "quality_mult":  r.get("quality_mult"),
+             "hf":            r.get("hf"),
+             "park_mult":     r.get("park_mult"),
+             "weather_mult":  r.get("weather_mult"),
+             "bullpen_mult":  r.get("bullpen_mult"),
+             "bvp_mult":      r.get("bvp_mult"),
+             "bvp_pa":        r.get("bvp_pa"),
+             "bvt_mult":      r.get("bvt_mult"),
+             "bvt_pa":        r.get("bvt_pa"),
+             "bvs_mult":      r.get("bvs_mult"),
+             "bvs_pa":        r.get("bvs_pa"),
+             "impact":        r.get("impact"),
+             "recent_pa":     r.get("recent_pa"),
+             # Real-odds side (Odds API). Null when no real line was matched.
              "real_line":       r.get("real_line"),
              "real_over_price": r.get("real_over_price"),
              "real_book":       r.get("real_book"),
@@ -1789,6 +1849,14 @@ def main():
     DATE = et_today.isoformat()
     SEASON = et_today.year
     print(f"Running for date={DATE} (ET) season={SEASON}", flush=True)
+
+    # Load calibration parameters (None if not yet fitted)
+    cal_params = load_calibration()
+    if cal_params:
+        print(f"  calibration: a={cal_params['a']:+.3f} b={cal_params['b']:+.3f} "
+              f"fitted from N={cal_params['n_train']} on {cal_params.get('fitted_at_utc','?')}", flush=True)
+    else:
+        print(f"  no calibration_params.json found — using RAW model predictions", flush=True)
 
     # Grade yesterday's picks, if we have them and haven't graded them yet. Safe
     # to call every run — it no-ops if the picks file is missing, if the results
@@ -1971,6 +2039,25 @@ def main():
             "_my_team_id": r["_my_team_id"], "_opp_team_id": opp_tid, "_venue_id": vid,
             **r2,
         })
+
+    # Apply Platt-scaling calibration to every projected probability BEFORE
+    # ranking. The raw P(over) values from the Poisson model are systematically
+    # ~27% too high; this transform shrinks them to match observed reality.
+    # We save the raw values as p_over_15_raw / p_over_25_raw so the picks JSON
+    # records both, which lets calibrate_predictions.py re-fit periodically.
+    if cal_params is not None:
+        for r in rescored:
+            r["p_over_15_raw"] = r["p_over_15"]
+            r["p_over_25_raw"] = r["p_over_25"]
+            r["p_over_15"] = apply_calibration(r["p_over_15"], cal_params)
+            r["p_over_25"] = apply_calibration(r["p_over_25"], cal_params)
+            # Recompute edge + best-line decision against the CALIBRATED probs
+            edge_15 = r["p_over_15"] - BREAKEVEN_PROB
+            edge_25 = r["p_over_25"] - BREAKEVEN_PROB
+            r["edge_15"] = edge_15
+            r["edge_25"] = edge_25
+            r["best_line"] = "1.5" if edge_15 >= edge_25 else "2.5"
+            r["best_edge"] = max(edge_15, edge_25)
 
     rescored.sort(key=lambda x: -x["best_edge"])
 

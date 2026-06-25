@@ -1,0 +1,47 @@
+name: Calibrate Predictions
+
+# Manual trigger from the Actions tab. Re-fits the Platt-scaling calibration
+# parameters from all currently-graded results, prints diagnostics, and commits
+# the updated calibration_params.json back to main. The next daily-email run
+# picks up the new parameters automatically (it loads the file at startup).
+#
+# When to run:
+#   - First time: now (against the 422-pick history)
+#   - Weekly: after enough new picks accumulate to meaningfully shift the fit
+#   - After any major model change
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to commit calibration_params.json
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fit calibration from results/
+        run: python calibrate_predictions.py
+
+      - name: Commit calibration_params.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f calibration_params.json ]; then git add calibration_params.json; fi
+          if git diff --cached --quiet; then
+            echo "No calibration changes to commit."
+          else
+            git commit \
+              -m "Refit Platt calibration $(date -u +%Y-%m-%d)" \
+              -m "[skip ci]"
+            git push
+          fi

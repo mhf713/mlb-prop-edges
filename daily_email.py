@@ -262,6 +262,22 @@ ODDS_MARKET = "batter_hits_runs_rbis"    # combined H+R+RBI prop market key
 # API quota — we just compare more lines per player.
 ODDS_BOOKS = ["draftkings", "fanduel", "betmgm", "caesars", "fanatics"]
 
+# ---- Free-tier budget optimization ----
+# The Odds API bills 1 credit per market per event per call. With 15 games and
+# 4 markets, we'd burn ~2,250 credits/month — far over the 500-credit free tier.
+# Instead we compute internal game projections first, rank games by projected
+# margin (biggest mismatches = highest expected edge), and only query the top-N
+# games. For each of those we make ONE combined-market call.
+#
+# Cost math: (TOP_N_GAMES × 4 markets + 1 events-list call) × 30 days = credits/month.
+# At TOP_N_GAMES=3 that's 390/month — well under the 500-credit free tier with buffer.
+# Bump this to 4 (480/month) or 5 (610/month, needs paid tier) once you upgrade.
+ODDS_TOP_N_GAMES = 3                       # games queried per day
+ODDS_COMBINED_MARKETS = "h2h,totals,team_totals,batter_hits_runs_rbis"
+# NOTE: 'spreads' (runline) intentionally omitted to stay within the free tier.
+# Runline edges tend to be smaller than moneyline/total edges because of the
+# fixed ±1.5 handicap and high margin variance.
+
 def get_odds_events(api_key, date_iso):
     """List today's MLB events from The Odds API. One request burns 1 from the
     monthly quota and returns all events for the sport. We filter to date_iso."""
@@ -965,6 +981,116 @@ def send_email(api_key, to_email, subject, html_body, text_body):
 def fmt_pct(p): return f"{p*100:.1f}%"
 def fmt_edge_pct(e): return f"{e*100:+.1f}%"
 
+def build_team_market_picks_html(team_market_picks, game_projections, top_n=15, min_edge=0.01):
+    """Render the primary team-market picks panel: team totals, game totals,
+    moneylines, and runlines, sorted by edge, filtered to positive-edge only."""
+    positive = [p for p in team_market_picks if (p.get("edge") or 0) >= min_edge]
+    if not positive and not game_projections:
+        return ("<div style='margin:14px 0;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;"
+                "border-radius:8px;font-size:12px;color:#6b7280'>"
+                "<strong style='color:#111827'>Team & Game Market Edges:</strong> no positive-edge "
+                "picks found today, or Odds API not configured.</div>")
+
+    def market_label(m):
+        return {"team_total": "Team Total", "game_total": "Game Total",
+                "moneyline": "Moneyline", "runline": "Runline"}.get(m, m)
+    def side_cell(p):
+        m = p.get("market", "")
+        if m == "team_total":
+            return f"<strong>{p.get('team','?')}</strong> {p.get('side','')} {p.get('line','?')}"
+        if m == "game_total":
+            return f"{p.get('side','')} {p.get('line','?')}"
+        if m == "moneyline":
+            return f"<strong>{p.get('team','?')}</strong> ML"
+        if m == "runline":
+            return f"<strong>{p.get('team','?')}</strong> {p.get('side','')}"
+        return "?"
+    def price_str(p):
+        pr = p.get("price")
+        if pr is None: return "&mdash;"
+        return f"{int(pr):+d}" if pr > 0 else str(int(pr))
+    def proj_str(p):
+        pj = p.get("projected")
+        if pj is None: return "&mdash;"
+        if p.get("market") == "runline":
+            return f"margin {pj:+.1f}"
+        return f"{pj:.2f}"
+
+    rows_html = []
+    for i, p in enumerate(positive[:top_n], 1):
+        edge = p.get("edge", 0)
+        edge_color = "#166534" if edge > 0.05 else "#059669" if edge > 0.02 else "#6b7280"
+        rows_html.append(
+            f"<tr style='border-top:1px solid #f3f4f6'>"
+            f"<td style='padding:6px 10px;color:#9ca3af;font-size:11px'>{i}</td>"
+            f"<td style='padding:6px 10px;color:#6b7280;font-size:11px'>{market_label(p.get('market',''))}</td>"
+            f"<td style='padding:6px 10px'>{side_cell(p)} <span style='color:#9ca3af;font-size:11px'>({p.get('game_label','')})</span></td>"
+            f"<td style='padding:6px 10px'>{price_str(p)}</td>"
+            f"<td style='padding:6px 10px;font-size:11px;color:#6b7280'>{p.get('book','&mdash;')}</td>"
+            f"<td style='padding:6px 10px;font-size:11px'>{proj_str(p)}</td>"
+            f"<td style='padding:6px 10px;font-size:11px'>{fmt_pct(p.get('p_win', 0))}</td>"
+            f"<td style='padding:6px 10px;font-size:11px'>{fmt_pct(p.get('breakeven', 0.5))}</td>"
+            f"<td style='padding:6px 10px;font-weight:700;color:{edge_color}'>{fmt_edge_pct(edge)}</td>"
+            f"</tr>"
+        )
+    return (
+        f"<div style='margin:14px 0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden'>"
+        f"<div style='padding:10px 14px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-weight:700;color:#111827;font-size:13px'>"
+        f"Team &amp; Game Market Edges &mdash; primary picks "
+        f"<span style='color:#9ca3af;font-weight:400;font-size:11px'>"
+        f"({len(positive)} positive-edge picks across {len(game_projections)} games)</span>"
+        f"</div>"
+        f"<table style='width:100%;border-collapse:collapse;font-size:12px'>"
+        f"<thead style='color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left;background:#fafafa'>"
+        f"<tr>"
+        f"<th style='padding:6px 10px'>#</th><th style='padding:6px 10px'>Market</th>"
+        f"<th style='padding:6px 10px'>Pick</th><th style='padding:6px 10px'>Price</th>"
+        f"<th style='padding:6px 10px'>Book</th><th style='padding:6px 10px'>Projection</th>"
+        f"<th style='padding:6px 10px'>Model P</th><th style='padding:6px 10px'>Break-even</th>"
+        f"<th style='padding:6px 10px'>Edge</th>"
+        f"</tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody>"
+        f"</table>"
+        f"</div>"
+    )
+
+def build_game_projections_html(game_projections):
+    """Render the game-projection reference table (one row per game with each
+    team's projected runs). Purely informational — bettors can eyeball where
+    the model sees mismatches."""
+    if not game_projections:
+        return ""
+    rows_html = []
+    for gp in sorted(game_projections, key=lambda x: -abs(x["margin"])):
+        margin_color = "#166534" if abs(gp["margin"]) > 1.5 else "#6b7280"
+        p_str = f"{gp['p_home_win']*100:.0f}% home"
+        rows_html.append(
+            f"<tr style='border-top:1px solid #f3f4f6'>"
+            f"<td style='padding:6px 10px'>{gp['away_abbr']} @ {gp['home_abbr']}</td>"
+            f"<td style='padding:6px 10px'>{gp['away_proj']['e_r']:.2f}</td>"
+            f"<td style='padding:6px 10px'>{gp['home_proj']['e_r']:.2f}</td>"
+            f"<td style='padding:6px 10px'>{gp['game_total']:.2f}</td>"
+            f"<td style='padding:6px 10px;color:{margin_color};font-weight:600'>{gp['margin']:+.2f}</td>"
+            f"<td style='padding:6px 10px;font-size:11px;color:#6b7280'>{p_str}</td>"
+            f"</tr>"
+        )
+    return (
+        f"<div style='margin:14px 0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden'>"
+        f"<div style='padding:10px 14px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-weight:700;color:#111827;font-size:13px'>"
+        f"Game-Level Projections <span style='color:#9ca3af;font-weight:400;font-size:11px'>"
+        f"(sorted by absolute run margin)</span>"
+        f"</div>"
+        f"<table style='width:100%;border-collapse:collapse;font-size:12px'>"
+        f"<thead style='color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left;background:#fafafa'>"
+        f"<tr><th style='padding:6px 10px'>Game</th><th style='padding:6px 10px'>Away R</th>"
+        f"<th style='padding:6px 10px'>Home R</th><th style='padding:6px 10px'>Total</th>"
+        f"<th style='padding:6px 10px'>Margin (Home-Away)</th>"
+        f"<th style='padding:6px 10px'>Win Prob</th></tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody>"
+        f"</table>"
+        f"</div>"
+    )
+
 def fmt_american_price(p):
     """Format American odds as '+135' or '-120'."""
     if p is None:
@@ -1153,7 +1279,8 @@ def build_pick_commentary(r):
 
     return s1 + " " + s2
 
-def build_email_html(date, rows, stats, track_record_html=""):
+def build_email_html(date, rows, stats, track_record_html="",
+                     team_market_html="", game_projections_html=""):
     today_str = dt.date.fromisoformat(date).strftime("%A, %B %d, %Y")
     rows_html = []
     for i, r in enumerate(rows, 1):
@@ -1213,6 +1340,9 @@ def build_email_html(date, rows, stats, track_record_html=""):
         f"<h1 style='font-size:20px;margin:0 0 4px'>MLB Prop Edge — Top 10 H+R+RBI</h1>"
         f"<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>{today_str} &middot; {stats['games']} games &middot; ranked by best edge vs -110 break-even (52.4%)</div>"
         f"{track_record_html}"
+        f"{team_market_html}"
+        f"{game_projections_html}"
+        f"<h2 style='font-size:15px;margin:20px 0 6px'>Player H+R+RBI picks <span style='color:#9ca3af;font-weight:400;font-size:12px'>(secondary — higher variance)</span></h2>"
         f"{_build_top5_commentary_block(rows)}"
         f"<table style='width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px'>"
         f"<thead style='background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left'>"
@@ -1296,7 +1426,8 @@ def build_email_text(date, rows, stats, track_record_line=""):
     lines.append("Park 0.92–1.20 · Weather 0.92–1.08 · Bullpen 0.95–1.05 net · BvP 0.85–1.20 (regressed)")
     return "\n".join(lines)
 
-def build_dashboard_html(date, rows, stats, track_record_html=""):
+def build_dashboard_html(date, rows, stats, track_record_html="",
+                         team_market_html="", game_projections_html=""):
     """Standalone dashboard HTML — same data as the email, just more rows and a timestamp.
 
     Designed to be committed to docs/index.html and served via GitHub Pages.
@@ -1368,6 +1499,9 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         f"<div style='color:#6b7280;font-size:13px;margin-bottom:6px'>{today_str} &middot; {stats['games']} games &middot; {stats['qualified']} qualified batters &middot; ranked by best edge vs &minus;110 break-even (52.4%)</div>"
         f"<div style='color:#9ca3af;font-size:11px;margin-bottom:6px'>Generated {gen_at_utc} &middot; same model as the daily email</div>"
         f"{track_record_html}"
+        f"{team_market_html}"
+        f"{game_projections_html}"
+        f"<h2 style='font-size:16px;margin:20px 0 8px'>Player H+R+RBI picks <span style='color:#9ca3af;font-weight:400;font-size:12px'>(secondary — higher variance)</span></h2>"
         f"<div style='overflow-x:auto'>"
         f"<table style='width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:13px'>"
         f"<thead style='background:#f9fafb;color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left'>"
@@ -1419,6 +1553,308 @@ def build_dashboard_html(date, rows, stats, track_record_html=""):
         f"</div>"
         f"</div></body></html>"
     )
+
+# =============== TEAM-LEVEL AGGREGATION ===============
+# The user's Sept 2026 pivot: use the same batter-level projections as inputs to
+# TEAM projections. Individual props have too much variance (single-batter ~4 PA
+# per game); team-level projections aggregate across 9 batters × 4-5 PA = 40 PA
+# per side, which averages toward true talent much faster.
+#
+# Aggregation rule: for each team, take the 9 batters most likely to start —
+# preferring confirmed lineup slots when posted, falling back to top-9 by
+# expected_pa (which incorporates recent role and playing time). Sum their
+# projected E[Runs] (and E[Hits], E[RBI] for the summary section) to produce
+# per-team projected runs. Sum both sides for the game total.
+
+def team_projected_starters(batters_for_team, k=9):
+    """Pick the batters most likely to start for a team, up to k of them.
+
+    Preference order:
+      1. Confirmed in posted lineup (in_lineup is True), sorted by lineup_pos
+      2. Then top by expected_pa (which is DEFAULT_PA when lineup unposted, or
+         the by-order value when it IS posted — proxies for likely role)
+      3. Skip batters with recent_pa < 15 (already filtered upstream, but be defensive)
+    """
+    confirmed = [b for b in batters_for_team if b.get("in_lineup") is True]
+    confirmed.sort(key=lambda b: b.get("lineup_pos") or 99)
+    if len(confirmed) >= k:
+        return confirmed[:k]
+    remaining = [b for b in batters_for_team
+                 if b.get("in_lineup") is not True
+                 and (b.get("recent_pa") or 0) >= 15]
+    remaining.sort(key=lambda b: -(b.get("expected_pa") or 0))
+    return (confirmed + remaining)[:k]
+
+def project_team_runs(batters_for_team, k=9):
+    """Sum expected H/R/RBI over the k projected-starter batters for a team."""
+    starters = team_projected_starters(batters_for_team, k=k)
+    e_h   = sum((b.get("e_h") or 0) for b in starters)
+    e_r   = sum((b.get("e_r") or 0) for b in starters)
+    e_rbi = sum((b.get("e_rbi") or 0) for b in starters)
+    return {
+        "e_h": e_h, "e_r": e_r, "e_rbi": e_rbi,
+        "e_hrr_team": e_h + e_r + e_rbi,
+        "starters": starters,
+        "n_confirmed": sum(1 for b in starters if b.get("in_lineup") is True),
+    }
+
+def project_games(rescored, games_meta):
+    """Aggregate the scored batter pool into per-game projections.
+
+    games_meta is a list of dicts with per-game context: away/home team ids,
+    abbreviations, venue, game label. Returns list of game-level projections.
+    """
+    by_team = {}
+    for r in rescored:
+        tid = r.get("_my_team_id")
+        if tid is None: continue
+        by_team.setdefault(tid, []).append(r)
+    out = []
+    for g in games_meta:
+        a_tid = g["away_team_id"]; h_tid = g["home_team_id"]
+        a_proj = project_team_runs(by_team.get(a_tid, []))
+        h_proj = project_team_runs(by_team.get(h_tid, []))
+        game_total = a_proj["e_r"] + h_proj["e_r"]
+        margin = h_proj["e_r"] - a_proj["e_r"]     # positive = home favored on runs
+        # Pythagorean-esque win probability. Empirical MLB exponent ~1.83.
+        # Use log-space to avoid overflow with very small run totals.
+        def p_win(r_for, r_against, exponent=1.83):
+            r_for = max(0.1, r_for)
+            r_against = max(0.1, r_against)
+            num = r_for ** exponent
+            den = num + r_against ** exponent
+            return num / den if den > 0 else 0.5
+        p_home_win = p_win(h_proj["e_r"], a_proj["e_r"])
+        out.append({
+            "game_label": g["game_label"],
+            "away_abbr": g["away_abbr"], "home_abbr": g["home_abbr"],
+            "away_team_id": a_tid, "home_team_id": h_tid,
+            "venue": g.get("venue", ""),
+            "away_proj": a_proj, "home_proj": h_proj,
+            "game_total": game_total, "margin": margin,
+            "p_home_win": p_home_win, "p_away_win": 1 - p_home_win,
+        })
+    return out
+
+# =============== GAME-LEVEL ODDS + EDGES ===============
+# The Odds API extension: query totals, h2h (moneyline), spreads (runline), and
+# team_totals in one pass per event. Then compute edges against our projected
+# team runs, game total, and win probabilities.
+
+def get_combined_odds_for_event(api_key, event_id, markets=ODDS_COMBINED_MARKETS):
+    """Fetch all markets we need for one event in a SINGLE combined call.
+
+    This is the free-tier-optimized replacement for calling get_odds_for_event()
+    and get_game_odds_for_event() separately. The Odds API bills per-market so
+    combining doesn't save credits, but it does halve the number of round-trips
+    (and rate-limit headers).
+
+    Cost: len(markets.split(',')) credits per call, or 4 for our default set.
+    """
+    if not api_key or not event_id:
+        return None
+    try:
+        return json.loads(fetch(
+            f"{ODDS_API_BASE}/sports/{ODDS_SPORT}/events/{event_id}/odds"
+            f"?apiKey={api_key}&regions=us&markets={markets}&oddsFormat=american",
+            timeout=25
+        ))
+    except urllib.error.HTTPError as he:
+        body = ""
+        try: body = he.read().decode("utf-8", errors="replace")[:200]
+        except Exception: pass
+        print(f"  WARN: combined odds {event_id} HTTP {he.code}: {body}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  WARN: combined odds {event_id} failed: {e}", file=sys.stderr)
+        return None
+
+# Legacy alias — old code paths may still call this name
+def get_game_odds_for_event(api_key, event_id):
+    return get_combined_odds_for_event(api_key, event_id)
+
+def _best_by_direction(offerings, direction, expected_line=None):
+    """From a list of {book, name, point, price} entries, return the best-price
+    offering that matches `direction` (Over/Under/Home/Away/etc.). If expected_line
+    is given, prefer offerings at that line."""
+    matches = [o for o in offerings if o.get("name") == direction]
+    if not matches: return None
+    if expected_line is not None:
+        exact = [o for o in matches if abs((o.get("point") or 0) - expected_line) < 0.01]
+        if exact: matches = exact
+    def price_val(o):
+        p = o.get("price")
+        if p is None: return -999
+        return american_to_breakeven(p) * -1
+    return max(matches, key=price_val)
+
+def extract_game_market_offers(event_odds, books=ODDS_BOOKS):
+    """From event_odds, return dict of market_key -> list of {book, name, point, price}
+    across all books we care about."""
+    out = {"totals": [], "h2h": [], "spreads": [], "team_totals": []}
+    if not event_odds:
+        return out
+    for bm in event_odds.get("bookmakers", []) or []:
+        if bm.get("key") not in books:
+            continue
+        book_title = bm.get("title", bm.get("key", ""))
+        for market in bm.get("markets", []) or []:
+            mkey = market.get("key")
+            if mkey not in out:
+                continue
+            for outcome in market.get("outcomes", []) or []:
+                out[mkey].append({
+                    "book": book_title,
+                    "book_key": bm.get("key"),
+                    "name": outcome.get("name"),
+                    "description": outcome.get("description"),
+                    "point": outcome.get("point"),
+                    "price": outcome.get("price"),
+                })
+    return out
+
+def compute_game_edges(game_proj, offers):
+    """Given a projected game (from project_games) and the shopped market offers,
+    return a list of individual bet 'picks' with computed edges.
+
+    Each pick: {market, side, book, line/handicap, price, projection, breakeven,
+    edge, note}. Edges > 0 = model likes it.
+    """
+    picks = []
+
+    # ---- Game total (Over/Under) ----
+    gt_projection = game_proj["game_total"]
+    for direction in ("Over", "Under"):
+        best = _best_by_direction(offers["totals"], direction)
+        if not best: continue
+        line = best.get("point")
+        price = best.get("price")
+        if line is None or price is None: continue
+        # Simple linear edge: (projection - line) magnitude represents strength.
+        # For probability edge we treat the projected total as if it were the mean
+        # and use a normal approximation with sigma ~ 3.0 (empirical MLB total sd).
+        margin = gt_projection - line
+        # Approximate P(over) via normal cdf with sigma=3.0
+        SIGMA_TOTAL = 3.0
+        z = margin / SIGMA_TOTAL
+        # normal cdf via math.erf
+        p_over = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+        p_bet = p_over if direction == "Over" else (1 - p_over)
+        be = american_to_breakeven(price)
+        edge = p_bet - be
+        picks.append({
+            "market": "game_total", "side": direction, "line": line,
+            "price": price, "book": best.get("book"),
+            "projected": gt_projection, "p_win": p_bet, "breakeven": be, "edge": edge,
+        })
+
+    # ---- Team totals (per team, Over/Under) ----
+    for side_label, side_proj, side_abbr in (
+        ("away", game_proj["away_proj"], game_proj["away_abbr"]),
+        ("home", game_proj["home_proj"], game_proj["home_abbr"])
+    ):
+        team_proj_runs = side_proj["e_r"]
+        # team_totals outcomes typically use "Over"/"Under" as name and the team
+        # name (or "Home"/"Away") in description. Books vary — grab whichever
+        # side matches this team.
+        team_offers = []
+        for o in offers["team_totals"]:
+            desc = (o.get("description") or "").lower()
+            # Normalize — sometimes it's the full team name, sometimes an abbr
+            if side_abbr.lower() in desc or side_label.lower() in desc:
+                team_offers.append(o)
+        for direction in ("Over", "Under"):
+            best = _best_by_direction(team_offers, direction)
+            if not best: continue
+            line = best.get("point")
+            price = best.get("price")
+            if line is None or price is None: continue
+            margin = team_proj_runs - line
+            # Team totals have lower variance than game totals; sigma ~ 2.0
+            SIGMA_TEAM = 2.0
+            z = margin / SIGMA_TEAM
+            p_over_team = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+            p_bet = p_over_team if direction == "Over" else (1 - p_over_team)
+            be = american_to_breakeven(price)
+            edge = p_bet - be
+            picks.append({
+                "market": "team_total", "team": side_abbr, "side": direction,
+                "line": line, "price": price, "book": best.get("book"),
+                "projected": team_proj_runs, "p_win": p_bet, "breakeven": be, "edge": edge,
+            })
+
+    # ---- Moneyline (h2h) ----
+    # h2h outcomes: name = full team name, no point
+    for side_label, p_side_win, side_abbr, team_name_key in (
+        ("away", game_proj["p_away_win"], game_proj["away_abbr"], "away_full"),
+        ("home", game_proj["p_home_win"], game_proj["home_abbr"], "home_full")
+    ):
+        # Best price for this team
+        best_price = None
+        best_book = None
+        for o in offers["h2h"]:
+            oname = (o.get("name") or "").lower()
+            if side_abbr.lower() in oname:
+                pr = o.get("price")
+                if pr is not None and (best_price is None or american_to_breakeven(pr) < american_to_breakeven(best_price)):
+                    best_price = pr
+                    best_book = o.get("book")
+        if best_price is None:
+            continue
+        be = american_to_breakeven(best_price)
+        edge = p_side_win - be
+        picks.append({
+            "market": "moneyline", "team": side_abbr, "side": side_label,
+            "price": best_price, "book": best_book,
+            "projected": None, "p_win": p_side_win, "breakeven": be, "edge": edge,
+        })
+
+    # ---- Runline (spreads) ----
+    # SKIPPED by default to stay under the free-tier Odds API budget. If offers["spreads"]
+    # is empty (as it will be when we don't query the market), this block is a no-op.
+    # Left in place so switching back to a paid tier just requires adding 'spreads' to
+    # ODDS_COMBINED_MARKETS.
+    # Standard MLB runline: -1.5 / +1.5. Model the game margin (home_score - away_score)
+    # as Normal(mu=home_projected_margin, sigma=3.0). Winning conditions:
+    #   Home -1.5:  home wins by 2+       → P(margin >  1.5)
+    #   Home +1.5:  home doesn't lose 2+  → P(margin > -1.5)
+    #   Away -1.5:  away wins by 2+       → P(margin < -1.5)
+    #   Away +1.5:  away doesn't lose 2+  → P(margin <  1.5)
+    home_margin = game_proj["margin"]
+    SIGMA_MARGIN = 3.0
+    def _norm_cdf(x):
+        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+    runline_specs = [
+        ("Home -1.5", game_proj["home_abbr"], -1.5,
+         1 - _norm_cdf((1.5 - home_margin) / SIGMA_MARGIN)),
+        ("Home +1.5", game_proj["home_abbr"], +1.5,
+         1 - _norm_cdf((-1.5 - home_margin) / SIGMA_MARGIN)),
+        ("Away -1.5", game_proj["away_abbr"], -1.5,
+         _norm_cdf((-1.5 - home_margin) / SIGMA_MARGIN)),
+        ("Away +1.5", game_proj["away_abbr"], +1.5,
+         _norm_cdf((1.5 - home_margin) / SIGMA_MARGIN)),
+    ]
+    for direction, side_abbr, target_point, p_bet in runline_specs:
+        best = None
+        for o in offers["spreads"]:
+            oname = (o.get("name") or "").lower()
+            pt = o.get("point")
+            if side_abbr.lower() not in oname: continue
+            if pt is None or abs(pt - target_point) > 0.01: continue
+            pr = o.get("price")
+            if pr is None: continue
+            if best is None or american_to_breakeven(pr) < american_to_breakeven(best.get("price")):
+                best = o
+        if best is None: continue
+        be = american_to_breakeven(best.get("price"))
+        edge = p_bet - be
+        picks.append({
+            "market": "runline", "team": side_abbr, "side": direction,
+            "line": target_point, "price": best.get("price"), "book": best.get("book"),
+            "projected": home_margin, "p_win": p_bet, "breakeven": be, "edge": edge,
+        })
+
+    return picks
 
 # =============== GRADING / TRACK RECORD ===============
 
@@ -2073,58 +2509,86 @@ def main():
         deduped.append(r)
     rescored = deduped
 
-    # =============== REAL ODDS OVERLAY ===============
-    # Look up the actual sportsbook line + price for each top candidate via The Odds
-    # API. Re-rank by true edge (model P(over real line) - real break-even) instead
-    # of the model's assumed 1.5 / -110. Players we can't find a line for keep
-    # the model-edge ranking — they just sort below players with confirmed real edges
-    # of similar magnitude (small penalty to discourage betting blind).
+    # =============== REAL ODDS + TEAM AGGREGATION (unified path) ===============
+    # Free-tier-optimized flow: (1) aggregate batter projections to games first,
+    # (2) rank games by projected margin, (3) hit the Odds API for only the top-N
+    # games with all markets combined in a single per-event call. This keeps us
+    # under ~500 credits/month on the free tier.
     odds_api_key = os.environ.get("ODDS_API_KEY", "").strip()
+    team_market_picks = []
+    game_projections = []
+
+    # Build games_meta and initial game projections regardless of API key — the
+    # internal game projections are useful on their own even without odds.
+    games_meta = []
+    for g in games:
+        a = g["teams"]["away"]; h = g["teams"]["home"]
+        a_tid = a["team"]["id"]; h_tid = h["team"]["id"]
+        a_abbr = TEAM_ABBR.get(a["team"]["name"], a["team"]["name"][:3].upper())
+        h_abbr = TEAM_ABBR.get(h["team"]["name"], h["team"]["name"][:3].upper())
+        games_meta.append({
+            "away_team_id": a_tid, "home_team_id": h_tid,
+            "away_abbr": a_abbr, "home_abbr": h_abbr,
+            "away_full": a["team"]["name"], "home_full": h["team"]["name"],
+            "venue": (g.get("venue") or {}).get("name", ""),
+            "game_label": f"{a_abbr} @ {h_abbr}",
+        })
+    game_projections = project_games(rescored, games_meta)
+    print(f"  built {len(game_projections)} game projections (internal)", flush=True)
+
+    # Rank games by |margin| — biggest projected mismatches first. That's where
+    # we expect the biggest sportsbook line disagreements.
+    ranked_games = sorted(
+        list(zip(game_projections, games_meta)),
+        key=lambda pair: -abs(pair[0].get("margin", 0))
+    )
+
     if odds_api_key:
         try:
-            ODDS_OVERLAY_LIMIT = 30   # only enrich the top 30 — keeps API requests modest
-            top_for_odds = rescored[:ODDS_OVERLAY_LIMIT]
-            print(f"  fetching real lines for top {len(top_for_odds)} via The Odds API...", flush=True)
+            top_games = ranked_games[:ODDS_TOP_N_GAMES]
+            print(f"  querying Odds API for top {len(top_games)} games (of {len(games_meta)}) — "
+                  f"~{ODDS_TOP_N_GAMES * 4} credits/day at 4 markets each", flush=True)
 
-            # 1. Pull today's MLB events list (1 request)
-            events = get_odds_events(odds_api_key, DATE)
-            # Build (away_normalized, home_normalized) -> event_id map for matching
+            # Get the event list (1 credit) to resolve names → event IDs
+            events_list = get_odds_events(odds_api_key, DATE)
             event_id_by_pair = {}
-            for e in events:
+            for e in events_list:
                 a_norm = _normalize_name(e.get("away_team", ""))
                 h_norm = _normalize_name(e.get("home_team", ""))
                 if a_norm and h_norm:
                     event_id_by_pair[(a_norm, h_norm)] = e.get("id")
-            print(f"    {len(events)} MLB events found on slate", flush=True)
 
-            # 2. Identify which events our top candidates actually need (most slates
-            #    cover 6-12 unique games among top 30 picks)
-            needed_event_ids = set()
-            for r in top_for_odds:
-                g = r.get("game", "")
-                # game label is "AWAY @ HOME" with team abbreviations like "NYY @ BOS"
-                if " @ " not in g: continue
-                # We need full team names to match The Odds API. Reverse-map abbr → full name.
-                a_abbr, h_abbr = g.split(" @ ", 1)
-                a_full = next((n for n, a in TEAM_ABBR.items() if a == a_abbr.strip()), None)
-                h_full = next((n for n, a in TEAM_ABBR.items() if a == h_abbr.strip()), None)
-                if not a_full or not h_full: continue
-                eid = event_id_by_pair.get((_normalize_name(a_full), _normalize_name(h_full)))
-                if eid:
-                    needed_event_ids.add(eid)
-                    r["_odds_event_id"] = eid
-
-            # 3. Fetch odds for each needed event (1 request per event)
-            print(f"    fetching odds for {len(needed_event_ids)} events", flush=True)
+            # For each of the top games, ONE combined-market API call, then parse
+            # BOTH player-props AND game-market outcomes from the same response
             player_lines_by_event = {}
-            for eid in needed_event_ids:
-                evt = get_odds_for_event(odds_api_key, eid)
-                if evt:
-                    player_lines_by_event[eid] = extract_player_lines_from_event(evt)
+            matched_events = 0
+            for gp, gmeta in top_games:
+                event_id = event_id_by_pair.get(
+                    (_normalize_name(gmeta["away_full"]), _normalize_name(gmeta["home_full"]))
+                )
+                if not event_id:
+                    continue
+                event_odds = get_combined_odds_for_event(odds_api_key, event_id)
+                if not event_odds:
+                    continue
+                matched_events += 1
+                # Parse player-prop lines (batter_hits_runs_rbis is one of the requested markets)
+                player_lines_by_event[event_id] = extract_player_lines_from_event(event_odds)
+                # Also tag each batter row that plays in this game with the event id
+                for r in rescored:
+                    if r.get("game") == gmeta["game_label"]:
+                        r["_odds_event_id"] = event_id
+                # Parse game-market offers and compute edges
+                offers = extract_game_market_offers(event_odds)
+                for pick in compute_game_edges(gp, offers):
+                    pick["game_label"] = gp["game_label"]
+                    team_market_picks.append(pick)
 
-            # 4. For each top candidate, look up their lines and pick the best-edge one
+            print(f"    fetched {matched_events} events; {len(team_market_picks)} candidate market picks", flush=True)
+
+            # Overlay real player lines for batters in queried games
             matched = 0
-            for r in top_for_odds:
+            for r in rescored:
                 eid = r.get("_odds_event_id")
                 if not eid or eid not in player_lines_by_event:
                     continue
@@ -2142,20 +2606,21 @@ def main():
                 r["real_p_over"]     = best["p_over"]
                 r["real_breakeven"]  = best["breakeven"]
                 r["real_edge"]       = best["edge"]
-            print(f"    matched real lines for {matched}/{len(top_for_odds)} candidates", flush=True)
+            print(f"    matched real prop lines for {matched} batters in the top-N games", flush=True)
 
-            # 5. Re-rank: players with real_edge sort by that; players without
-            #    keep their model edge but get a small penalty (subtract 1%) so a
-            #    similarly-edged confirmed line beats a blind-line pick.
+            # Re-rank rescored: batters with real_edge sort by that; others keep model edge
             def rank_key(r):
                 if "real_edge" in r:
                     return -r["real_edge"]
                 return -(r["best_edge"] - 0.01)
             rescored.sort(key=rank_key)
+
+            # Sort team_market_picks by edge for display
+            team_market_picks.sort(key=lambda p: -(p.get("edge") or 0))
         except Exception as e:
-            print(f"  WARN: Odds API integration failed, falling back to model edges: {e}", file=sys.stderr)
+            print(f"  WARN: Odds API integration failed: {e}", file=sys.stderr)
     else:
-        print(f"  ODDS_API_KEY not set — using assumed lines (1.5 at -110 break-even)", flush=True)
+        print(f"  ODDS_API_KEY not set — using assumed lines / no game markets", flush=True)
 
     top = rescored[:10]
 
@@ -2164,7 +2629,35 @@ def main():
     # the top 15 on the dashboard and parlays.
     try:
         picks_file = save_picks(DATE, rescored[:15])
-        print(f"  wrote {picks_file} (top 15)", flush=True)
+        # Enrich the picks file with team-level projections + game-market picks
+        # so tomorrow's grader (once updated) can grade both markets.
+        try:
+            with open(picks_file, "r") as f:
+                pdata = json.load(f)
+            pdata["game_projections"] = [
+                {"game_label": gp["game_label"], "away_abbr": gp["away_abbr"], "home_abbr": gp["home_abbr"],
+                 "away_projected_runs": round(gp["away_proj"]["e_r"], 3),
+                 "home_projected_runs": round(gp["home_proj"]["e_r"], 3),
+                 "game_total": round(gp["game_total"], 3),
+                 "margin": round(gp["margin"], 3),
+                 "p_home_win": round(gp["p_home_win"], 4),
+                 "away_e_h": round(gp["away_proj"]["e_h"], 3),
+                 "home_e_h": round(gp["home_proj"]["e_h"], 3),
+                 "away_e_rbi": round(gp["away_proj"]["e_rbi"], 3),
+                 "home_e_rbi": round(gp["home_proj"]["e_rbi"], 3)}
+                for gp in game_projections
+            ]
+            # Keep the top-20 positive-edge picks (all markets combined) for tomorrow's grader
+            pdata["team_market_picks"] = [
+                {k: v for k, v in tp.items() if k != "_odds_event_id"}
+                for tp in team_market_picks[:20]
+            ]
+            with open(picks_file, "w") as f:
+                json.dump(pdata, f, indent=2, default=str)
+            print(f"  enriched {picks_file} with {len(game_projections)} game projections "
+                  f"+ {min(20, len(team_market_picks))} market picks", flush=True)
+        except Exception as ee:
+            print(f"  WARN: could not enrich picks file with team data: {ee}", file=sys.stderr)
     except Exception as e:
         print(f"  WARN: could not write picks snapshot: {e}", file=sys.stderr)
 
@@ -2174,9 +2667,17 @@ def main():
     tr_text = build_track_record_text(DATE, all_results)
 
     stats = {"games": len(games), "candidates": len(rows), "qualified": len(qualified), "rostered": rostered}
-    html = build_email_html(DATE, top, stats, track_record_html=tr_html)
+
+    # Build team/game market panels (empty strings if no data — degrades cleanly)
+    team_market_html = build_team_market_picks_html(team_market_picks, game_projections)
+    game_proj_html = build_game_projections_html(game_projections)
+
+    html = build_email_html(DATE, top, stats,
+                            track_record_html=tr_html,
+                            team_market_html=team_market_html,
+                            game_projections_html=game_proj_html)
     text = build_email_text(DATE, top, stats, track_record_line=tr_text)
-    subject = f"MLB Prop Edge — Top 10 H+R+RBI for {DATE}"
+    subject = f"MLB Prop Edge — Team Totals + Player Picks for {DATE}"
 
     print(f"  scored {len(rows)} batters, {len(qualified)} qualified for prop board; sending top 10...", flush=True)
     resp = send_email(api_key, recipient, subject, html, text)
@@ -2188,7 +2689,10 @@ def main():
     try:
         os.makedirs("docs", exist_ok=True)
         dash_rows = rescored[:30]
-        dash_html = build_dashboard_html(DATE, dash_rows, stats, track_record_html=tr_html)
+        dash_html = build_dashboard_html(DATE, dash_rows, stats,
+                                         track_record_html=tr_html,
+                                         team_market_html=team_market_html,
+                                         game_projections_html=game_proj_html)
         with open("docs/index.html", "w", encoding="utf-8") as f:
             f.write(dash_html)
         print(f"  wrote docs/index.html ({len(dash_rows)} rows)", flush=True)

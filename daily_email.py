@@ -878,7 +878,14 @@ def project_hrr(bid, pid, lineup_pos, batters, pitchers, league_mix, league_xwob
                 bvs_mult=1.0, bvs_pa=0, bvs_woba=None):
     """Project expected H+R+RBI for a batter against today's pitcher, and prob of over lines."""
     base_xw = matchup_xwoba(batters, pitchers, league_mix, league_xwoba, bid, pid)
-    if not base_xw: return None
+    if not base_xw:
+        # Fallback for missing Savant data (rookie pitcher, low-IP callup, or batter
+        # with no arsenal-level coverage). Rather than dropping the batter entirely
+        # — which caused teams facing rookies to project 0 team runs — assume a
+        # neutral matchup (quality_mult = 1.0, impact = 0) and score them off
+        # season/recent rates. This ensures every rostered batter contributes
+        # something to the team aggregation.
+        base_xw = {"matchup": 0.310, "baseline": 0.310, "impact": 0.0}
     ph = p_hand_map.get(pid)
     hf = handedness_factor(hand, bid, ph)
 
@@ -1038,7 +1045,8 @@ def build_team_market_picks_html(team_market_picks, game_projections, top_n=15, 
         f"<div style='padding:10px 14px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-weight:700;color:#111827;font-size:13px'>"
         f"Team &amp; Game Market Edges &mdash; primary picks "
         f"<span style='color:#9ca3af;font-weight:400;font-size:11px'>"
-        f"({len(positive)} positive-edge picks across {len(game_projections)} games)</span>"
+        f"({len(positive)} picks &middot; one per game to avoid correlated bets &middot; "
+        f"{len(game_projections)} games projected)</span>"
         f"</div>"
         f"<table style='width:100%;border-collapse:collapse;font-size:12px'>"
         f"<thead style='color:#6b7280;font-size:11px;text-transform:uppercase;text-align:left;background:#fafafa'>"
@@ -1585,24 +1593,42 @@ def team_projected_starters(batters_for_team, k=9):
     remaining.sort(key=lambda b: -(b.get("expected_pa") or 0))
     return (confirmed + remaining)[:k]
 
-def project_team_runs(batters_for_team, k=9):
-    """Sum expected H/R/RBI over the k projected-starter batters for a team."""
+def project_team_runs(batters_for_team, k=9, fallback_rpg=None):
+    """Sum expected H/R/RBI over the k projected-starter batters for a team.
+
+    fallback_rpg (team season R/G) is used when the batter pool is thin (< 5
+    scored starters) OR when the sum produces an unrealistically low number
+    (< 1 run for a full team). Prevents the "0 projected runs" pathology that
+    hits when the opposing pitcher has no Savant data.
+    """
     starters = team_projected_starters(batters_for_team, k=k)
     e_h   = sum((b.get("e_h") or 0) for b in starters)
     e_r   = sum((b.get("e_r") or 0) for b in starters)
     e_rbi = sum((b.get("e_rbi") or 0) for b in starters)
+    fallback_used = False
+    if fallback_rpg is not None and (e_r < 1.0 or len(starters) < 5):
+        # Not enough scored batters to trust — replace with season R/G estimate.
+        # Rough H:R ratio ~1.4 and RBI:R ~1.0 for typical MLB lineups.
+        e_r = float(fallback_rpg)
+        e_h = e_r * 1.4
+        e_rbi = e_r * 1.0
+        fallback_used = True
     return {
         "e_h": e_h, "e_r": e_r, "e_rbi": e_rbi,
         "e_hrr_team": e_h + e_r + e_rbi,
         "starters": starters,
+        "n_starters": len(starters),
         "n_confirmed": sum(1 for b in starters if b.get("in_lineup") is True),
+        "fallback_used": fallback_used,
     }
 
-def project_games(rescored, games_meta):
+def project_games(rescored, games_meta, team_rpg_map=None, league_rpg=4.4):
     """Aggregate the scored batter pool into per-game projections.
 
     games_meta is a list of dicts with per-game context: away/home team ids,
-    abbreviations, venue, game label. Returns list of game-level projections.
+    abbreviations, venue, game label. team_rpg_map is {team_id: season R/G} —
+    used as a fallback when a team's batter pool is too thin to trust (e.g.,
+    facing a rookie pitcher with no Savant data).
     """
     by_team = {}
     for r in rescored:
@@ -1612,8 +1638,10 @@ def project_games(rescored, games_meta):
     out = []
     for g in games_meta:
         a_tid = g["away_team_id"]; h_tid = g["home_team_id"]
-        a_proj = project_team_runs(by_team.get(a_tid, []))
-        h_proj = project_team_runs(by_team.get(h_tid, []))
+        a_fallback = (team_rpg_map.get(a_tid, league_rpg) if team_rpg_map else None)
+        h_fallback = (team_rpg_map.get(h_tid, league_rpg) if team_rpg_map else None)
+        a_proj = project_team_runs(by_team.get(a_tid, []), fallback_rpg=a_fallback)
+        h_proj = project_team_runs(by_team.get(h_tid, []), fallback_rpg=h_fallback)
         game_total = a_proj["e_r"] + h_proj["e_r"]
         margin = h_proj["e_r"] - a_proj["e_r"]     # positive = home favored on runs
         # Pythagorean-esque win probability. Empirical MLB exponent ~1.83.
@@ -2533,8 +2561,19 @@ def main():
             "venue": (g.get("venue") or {}).get("name", ""),
             "game_label": f"{a_abbr} @ {h_abbr}",
         })
-    game_projections = project_games(rescored, games_meta)
-    print(f"  built {len(game_projections)} game projections (internal)", flush=True)
+    # Use the broader `rows` pool for team aggregation — includes batters that were
+    # filtered out of `qualified` (e.g., low Savant coverage facing rookie pitchers).
+    # Without this, teams facing pitchers with no Savant data project 0 team runs.
+    game_projections = project_games(rows, games_meta,
+                                     team_rpg_map=team_rpg,
+                                     league_rpg=league_rpg)
+    # Log per-team batter counts + projected runs so we can debug thin-pool cases
+    for gp in game_projections:
+        fb_a = " [FB]" if gp["away_proj"].get("fallback_used") else ""
+        fb_h = " [FB]" if gp["home_proj"].get("fallback_used") else ""
+        print(f"    {gp['away_abbr']:<4} ({gp['away_proj']['n_starters']:>2} btrs → {gp['away_proj']['e_r']:>4.2f} R{fb_a})  @  "
+              f"{gp['home_abbr']:<4} ({gp['home_proj']['n_starters']:>2} btrs → {gp['home_proj']['e_r']:>4.2f} R{fb_h})", flush=True)
+    print(f"  built {len(game_projections)} game projections (internal, [FB]=team R/G fallback)", flush=True)
 
     # Rank games by |margin| — biggest projected mismatches first. That's where
     # we expect the biggest sportsbook line disagreements.
@@ -2615,8 +2654,25 @@ def main():
                 return -(r["best_edge"] - 0.01)
             rescored.sort(key=rank_key)
 
-            # Sort team_market_picks by edge for display
+            # Sort team_market_picks by edge, then dedupe to ONE per game.
+            # Rationale: multiple picks from the same game (e.g. game total UNDER +
+            # team total UNDER + ML for weak-scoring team) are highly correlated —
+            # they all cash together on a pitchers'-duel outcome and all miss on a
+            # slugfest. They act like ONE bet on the underlying scenario, not three
+            # independent bets. Displaying only the top-edge pick per game removes
+            # this compounded-risk pathology.
             team_market_picks.sort(key=lambda p: -(p.get("edge") or 0))
+            seen_games = set()
+            deduped = []
+            for p in team_market_picks:
+                gl = p.get("game_label", "")
+                if gl in seen_games: continue
+                seen_games.add(gl)
+                deduped.append(p)
+            n_before = len(team_market_picks)
+            team_market_picks = deduped
+            print(f"    kept top edge per game: {len(team_market_picks)} picks "
+                  f"(dropped {n_before - len(team_market_picks)} correlated same-game entries)", flush=True)
         except Exception as e:
             print(f"  WARN: Odds API integration failed: {e}", file=sys.stderr)
     else:

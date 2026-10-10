@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-10",
+  "generated_at_utc": "2026-10-10 16:41 UTC",
+  "picks": [],
+  "game_projections": [
+    {
+      "game_label": "CWS @ CLE",
+      "away_abbr": "CWS",
+      "home_abbr": "CLE",
+      "away_projected_runs": 4.79,
+      "home_projected_runs": 4.185,
+      "game_total": 8.975,
+      "margin": -0.605,
+      "p_home_win": 0.4385,
+      "away_e_h": 6.706,
+      "home_e_h": 5.859,
+      "away_e_rbi": 4.79,
+      "home_e_rbi": 4.185
+    }
+  ],
+  "team_market_picks": []
+}

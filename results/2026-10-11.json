@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-11",
+  "graded_at_utc": "2026-10-12 20:39 UTC",
+  "results": [],
+  "summary": {
+    "graded": 0,
+    "matched": 0,
+    "played": 0,
+    "started": 0,
+    "over_15": 0,
+    "over_25": 0,
+    "ev_o15_sum": 0.0,
+    "ev_o25_sum": 0.0,
+    "real_line_picks": 0,
+    "real_line_wins": 0,
+    "real_line_profit_units": 0.0,
+    "real_line_staked_units": 0.0,
+    "over_15_rate": 0.0,
+    "over_25_rate": 0.0,
+    "expected_over_15_rate": 0.0,
+    "expected_over_25_rate": 0.0,
+    "roi_o15_pct": 0.0,
+    "real_line_win_rate": 0.0,
+    "real_line_roi_pct": 0.0
+  }
+}

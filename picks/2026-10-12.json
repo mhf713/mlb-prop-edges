@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-12",
+  "generated_at_utc": "2026-10-12 20:39 UTC",
+  "picks": [],
+  "game_projections": [
+    {
+      "game_label": "LAD @ MIL",
+      "away_abbr": "LAD",
+      "home_abbr": "MIL",
+      "away_projected_runs": 5.634,
+      "home_projected_runs": 5.984,
+      "game_total": 11.618,
+      "margin": 0.35,
+      "p_home_win": 0.5275,
+      "away_e_h": 8.893,
+      "home_e_h": 8.713,
+      "away_e_rbi": 5.407,
+      "home_e_rbi": 5.457
+    },
+    {
+      "game_label": "CLE @ TB",
+      "away_abbr": "CLE",
+      "home_abbr": "TB",
+      "away_projected_runs": 3.913,
+      "home_projected_runs": 4.464,
+      "game_total": 8.377,
+      "margin": 0.551,
+      "p_home_win": 0.5599,
+      "away_e_h": 8.295,
+      "home_e_h": 8.346,
+      "away_e_rbi": 3.73,
+      "home_e_rbi": 4.547
+    }
+  ],
+  "team_market_picks": [
+    {
+      "market": "game_total",
+      "side": "Over",
+      "line": 7.0,
+      "price": 105,
+      "book": "BetMGM",
+      "projected": 11.61838593492611,
+      "p_win": 0.938154223359978,
+      "breakeven": 0.4878048780487805,
+      "edge": 0.4503493453111975,
+      "game_label": "LAD @ MIL"
+    }
+  ]
+}

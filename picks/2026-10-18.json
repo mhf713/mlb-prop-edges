@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-18",
+  "generated_at_utc": "2026-10-18 15:09 UTC",
+  "picks": [],
+  "game_projections": [
+    {
+      "game_label": "TB @ CLE",
+      "away_abbr": "TB",
+      "home_abbr": "CLE",
+      "away_projected_runs": 4.543,
+      "home_projected_runs": 4.185,
+      "game_total": 8.728,
+      "margin": -0.358,
+      "p_home_win": 0.4625,
+      "away_e_h": 6.36,
+      "home_e_h": 5.859,
+      "away_e_rbi": 4.543,
+      "home_e_rbi": 4.185
+    }
+  ],
+  "team_market_picks": [
+    {
+      "market": "game_total",
+      "side": "Over",
+      "line": 6.5,
+      "price": 100,
+      "book": "FanDuel",
+      "projected": 8.728395061728396,
+      "p_win": 0.7711981138864576,
+      "breakeven": 0.5,
+      "edge": 0.27119811388645765,
+      "game_label": "TB @ CLE"
+    }
+  ]
+}

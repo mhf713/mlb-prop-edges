@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-19",
+  "generated_at_utc": "2026-10-19 18:03 UTC",
+  "picks": [],
+  "game_projections": [
+    {
+      "game_label": "CLE @ TB",
+      "away_abbr": "CLE",
+      "home_abbr": "TB",
+      "away_projected_runs": 4.185,
+      "home_projected_runs": 4.543,
+      "game_total": 8.728,
+      "margin": 0.358,
+      "p_home_win": 0.5375,
+      "away_e_h": 5.859,
+      "home_e_h": 6.36,
+      "away_e_rbi": 4.185,
+      "home_e_rbi": 4.543
+    }
+  ],
+  "team_market_picks": []
+}

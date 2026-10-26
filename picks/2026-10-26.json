@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-26",
+  "generated_at_utc": "2026-10-26 17:59 UTC",
+  "picks": [],
+  "game_projections": [
+    {
+      "game_label": "MIL @ TB",
+      "away_abbr": "MIL",
+      "home_abbr": "TB",
+      "away_projected_runs": 5.136,
+      "home_projected_runs": 4.543,
+      "game_total": 9.679,
+      "margin": -0.593,
+      "p_home_win": 0.4441,
+      "away_e_h": 7.19,
+      "home_e_h": 6.36,
+      "away_e_rbi": 5.136,
+      "home_e_rbi": 4.543
+    }
+  ],
+  "team_market_picks": []
+}
